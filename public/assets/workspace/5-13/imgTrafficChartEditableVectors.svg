@@ -1,0 +1,11 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="1080" height="250" viewBox="0 0 1080 250" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Traffic chart / editable vectors">
+<g id="Vector">
+<path d="M20 30H1060ZM20 90H1060ZM20 150H1060ZM20 210H1060Z" fill="black"/>
+<path d="M20 30H1060M20 90H1060M20 150H1060M20 210H1060" stroke="#34415C" stroke-dasharray="4 6"/>
+</g>
+<path id="Vector_2" d="M20 180L190 150L360 165L530 80L700 105L870 40L1060 65V210H20V180Z" fill="#A5B4FC" fill-opacity="0.08"/>
+<path id="Vector_3" d="M20 180L190 150L360 165L530 80L700 105L870 40L1060 65" stroke="#A5B4FC" stroke-width="3"/>
+<path id="Vector_4" d="M20 204L190 194L360 196L530 166L700 177L870 139L1060 151" stroke="#67E8F9" stroke-width="3"/>
+</g>
+</svg>

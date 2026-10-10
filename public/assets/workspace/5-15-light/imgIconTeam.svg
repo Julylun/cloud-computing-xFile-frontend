@@ -1,0 +1,10 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Icon / team" clip-path="url(#clip0_0_23)">
+<path id="Vector" d="M0 20V16.25C0 14.2609 0.701722 12.3532 1.9508 10.9467C3.19987 9.54018 4.89398 8.75 6.66043 8.75C8.42689 8.75 10.121 9.54018 11.3701 10.9467C12.6191 12.3532 13.3209 14.2609 13.3209 16.25V20M14.4309 0C15.3142 0 16.1612 0.395088 16.7858 1.09835C17.4103 1.80161 17.7612 2.75544 17.7612 3.75C17.7612 4.74456 17.4103 5.69839 16.7858 6.40165C16.1612 7.10491 15.3142 7.5 14.4309 7.5M16.6511 12.5C17.717 13.0186 18.6116 13.9006 19.209 15.0218C19.8064 16.143 20.0765 17.4469 19.9813 18.75" stroke="#475569" stroke-width="1.5" stroke-linecap="round"/>
+</g>
+<defs>
+<clipPath id="clip0_0_23">
+<rect width="20" height="20" fill="white"/>
+</clipPath>
+</defs>
+</svg>
