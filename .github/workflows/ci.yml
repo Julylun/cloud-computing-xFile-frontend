@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
 jobs:
   call-ci:
     uses: Julylun/cloud-computing-xFile-infra/.github/workflows/reusable-ci.yml@main
