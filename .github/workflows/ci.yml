@@ -1,0 +1,19 @@
+name: Frontend CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  call-ci:
+    uses: Julylun/cloud-computing-xFile-infra/.github/workflows/reusable-ci.yml@main
+    with:
+      service-name: frontend
+      dockerfile-path: ./Dockerfile
+      lint-command: npm run lint
+      test-command: npm run build
+      node-version: "22"
+    secrets:
+      INFRA_DISPATCH_TOKEN: ${{ secrets.INFRA_DISPATCH_TOKEN }}
