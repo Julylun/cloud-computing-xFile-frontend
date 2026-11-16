@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode, type FormEvent } from "react";
 import { useApp, type DemoFile } from "@/components/app-provider";
 import { Button, Field, Panel, WorkspaceShell } from "@/components/ui";
+import { apiRequest, type LinkAnalytics, type UserProfile } from "@/lib/api";
 import "@/styles/workspace.css";
 
 function Asset({ screen, name, alt = "", className = "" }: { screen: string; name: string; alt?: string; className?: string }) {
@@ -12,19 +13,6 @@ function Asset({ screen, name, alt = "", className = "" }: { screen: string; nam
   const tone = name === "imgIconPlus1" || name === "imgIconLink" || screen === "14-110" ? "ink" : name === "imgIconClock" ? "amber" : name === "imgIconBell2" ? "red" : name === "imgIconTeam1" ? "cyan" : name === "imgIconCheck" ? "green" : name === "imgIconEye" || name === "imgIconSearch" ? "muted" : "primary";
   // Keep the original export and its geometry in both themes; CSS adjusts color.
   return <img className={`ws-asset ${chart ? "ws-asset-chart" : `theme-icon theme-icon-${tone}`} ${className}`} src={`/assets/workspace/${screen}/${name}.svg`} alt={alt} />;
-}
-
-function Chart({ day, setDay }: { day: number | null; setDay: (day: number | null) => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(1);
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-    const observer = new ResizeObserver(entries => setScale(entries[0].contentRect.width / 1080));
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-  return <div ref={ref} className="ws-chart" style={{ height: 250 * scale }} onMouseLeave={() => setDay(null)}><div className="ws-chart-art" style={{ transform: `scale(${scale})` }}><Asset screen="5-13" name="imgTrafficChartEditableVectors" alt="Biểu đồ lượt xem và lượt tải từ ngày 22 đến 28 tháng 9" /></div><div className="ws-chart-hitareas">{[22, 23, 24, 25, 26, 27, 28].map((date, index) => <button key={date} aria-label={`Hoạt động ${date}/09`} onMouseEnter={() => setDay(index)} onFocus={() => setDay(index)} onBlur={() => setDay(null)} onClick={() => setDay(index)} />)}</div>{day !== null && <div className="ws-chart-tooltip" style={{ left: `${Math.min(65, day / 7 * 100)}%` }}>{day + 22}/09 · {[31, 62, 47, 132, 108, 173, 148][day]} lượt xem · {[7, 17, 15, 46, 35, 74, 61][day]} lượt tải</div>}</div>;
 }
 
 function Heading({ title, description, screen, action = true }: { title: string; description: string; screen: string; action?: boolean }) {
@@ -62,7 +50,7 @@ function formatDate(value: string) {
 }
 
 export function DashboardScreen() {
-  const { files, user, updateFile, deleteFile, toast } = useApp();
+  const { files, user, deleteFile, toast } = useApp();
   const [now, setNow] = useState(() => new Date().getTime());
   useEffect(() => { const timer = setInterval(() => setNow(new Date().getTime()), 60_000); return () => clearInterval(timer); }, []);
   const [search, setSearch] = useState("");
@@ -73,7 +61,7 @@ export function DashboardScreen() {
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState("");
   const [modal, setModal] = useState<"delete" | "extend" | null>(null);
-  const [expires, setExpires] = useState("2026-11-07");
+  const [actionError, setActionError] = useState("");
   const filtered = files.filter(file => {
     const actualStatus = fileStatus(file, now);
     const matchesStatus = status === "all" || actualStatus === status || status === "active" && actualStatus === "near-expiry";
@@ -85,32 +73,99 @@ export function DashboardScreen() {
   const currentPage = Math.min(page, pageCount);
   const visible = filtered.slice((currentPage - 1) * 3, currentPage * 3);
   const selected = files.find(file => file.id === selectedId) ?? visible[0];
-  const accessLabels = { public: "Công khai", password: "Mật khẩu", email: "Theo email", private: "Nhóm Design" };
+  const accessLabels = { public: "Công khai", password: "Mật khẩu", email: "Theo email", private: "Riêng tư" };
+  const activeLinks = files.filter(file => fileStatus(file, now) === "active").length;
+  const expiringLinks = files.filter(file => fileStatus(file, now) === "near-expiry").length;
   return <WorkspaceShell active="dashboard"><div className="ws-screen">
     <Heading screen="5-10" title="Mọi file. Một không gian." description={`Chào ${user?.name || "Minh Lâm"}, đây là hoạt động chia sẻ của bạn hôm nay.`} />
-    <Stats items={[{ label: "LINK ĐANG HOẠT ĐỘNG", value: Math.max(0, 21 + files.length), note: "+4 link trong tuần" }, { label: "LƯỢT XEM", value: files.reduce((sum, file) => sum + file.views, 0).toLocaleString("vi-VN"), note: "↑ 18% so với tuần trước" }, { label: "LƯỢT TẢI", value: files.reduce((sum, file) => sum + file.downloads, 0).toLocaleString("vi-VN"), note: "↑ 12% so với tuần trước" }, { label: "KHÁCH TRUY CẬP", value: "219", note: "↑ 8% so với tuần trước" }]} />
-    <div className="ws-expiration"><Asset screen="5-10" name="imgIconClock" /><span>2 link sẽ hết hạn trong 24 giờ tới.</span><Link href="/notifications">Xem thông báo →</Link></div>
+    <Stats items={[{ label: "LINK ĐANG HOẠT ĐỘNG", value: activeLinks, note: "Theo dữ liệu từ máy chủ" }, { label: "LƯỢT TRUY CẬP", value: files.reduce((sum, file) => sum + file.views, 0).toLocaleString("vi-VN"), note: "Tổng lượt ghi nhận" }, { label: "LƯỢT TẢI", value: files.reduce((sum, file) => sum + file.downloads, 0).toLocaleString("vi-VN"), note: "Tổng lượt tải ghi nhận" }, { label: "SẮP HẾT HẠN", value: expiringLinks, note: "Trong vòng 24 giờ" }]} />
+    <div className="ws-expiration"><Asset screen="5-10" name="imgIconClock" /><span>{expiringLinks} link sẽ hết hạn trong 24 giờ tới.</span><Link href="/notifications">Xem thông báo →</Link></div>
     <Panel className="ws-files-panel">
       <div className="ws-toolbar"><h2>File &amp; đường link</h2><label className="ws-search"><Asset screen="5-10" name="imgIconSearch" /><input aria-label="Tìm file" placeholder="Tìm tên file hoặc link..." value={search} onChange={event => { setSearch(event.target.value); setPage(1); }} /></label><Button variant="secondary" className="ws-filter-button" aria-expanded={showFilter} onClick={() => setShowFilter(!showFilter)}>Bộ lọc</Button></div>
       {showFilter && <div className="ws-filters"><label>Trạng thái<select value={status} onChange={event => { setStatus(event.target.value); setPage(1); }}><option value="all">Tất cả trạng thái</option><option value="active">Hoạt động</option><option value="near-expiry">Sắp hết hạn</option><option value="expired">Hết hạn</option><option value="disabled">Tạm dừng</option></select></label><label>Quyền truy cập<select value={access} onChange={event => { setAccess(event.target.value); setPage(1); }}><option value="all">Tất cả quyền truy cập</option>{Object.entries(accessLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><label>Sắp xếp<select value={sort} onChange={event => setSort(event.target.value)}><option value="original">Mới nhất</option><option value="name">Tên file A–Z</option><option value="views">Lượt xem cao nhất</option></select></label><Button variant="ghost" onClick={() => { setSearch(""); setStatus("all"); setAccess("all"); setSort("original"); }}>Đặt lại</Button></div>}
       <div className="ws-table-scroll"><table className="ws-files-table"><thead><tr><th>TÊN FILE / LINK</th><th>QUYỀN TRUY CẬP</th><th>LƯỢT XEM / TẢI</th><th>HẾT HẠN</th><th>TRẠNG THÁI</th></tr></thead><tbody>{visible.map(file => <tr key={file.id} onClick={() => setSelectedId(file.id)} className={selectedId === file.id ? "ws-row-selected" : ""}><td><div className="ws-file-name"><Asset screen="5-10" name="imgIconFile1" /><div><Link href={`/analytics?file=${encodeURIComponent(file.id)}`}>{file.name}</Link><small>{file.url.replace(/^https?:\/\//, "")}</small></div></div></td><td>{accessLabels[file.access]}</td><td className="ws-views">{file.views} / {file.downloads}</td><td>{formatDate(file.expiresAt)}</td><td><Status file={file} now={now} /></td></tr>)}</tbody></table></div>
       {visible.length === 0 && <div className="ws-empty"><Asset screen="5-17" name="imgIconFile" /><h3>{search || status !== "all" || access !== "all" ? "Không tìm thấy file phù hợp" : "Chưa có file nào"}</h3><p>{search || status !== "all" || access !== "all" ? "Thử tìm kiếm hoặc chọn bộ lọc khác." : "Tạo đường link đầu tiên và bắt đầu chia sẻ."}</p><Button href="/create">Tạo link mới</Button></div>}
-      <div className="ws-pagination"><small>Hiển thị {visible.length} trong {search || status !== "all" || access !== "all" ? filtered.length : 21 + files.length} link</small><div><button aria-label="Trang trước" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>←</button>{Array.from({ length: pageCount }, (_, i) => <button key={i} className={currentPage === i + 1 ? "ws-page-active" : ""} onClick={() => setPage(i + 1)}>{i + 1}</button>)}<button aria-label="Trang sau" disabled={currentPage >= pageCount} onClick={() => setPage(currentPage + 1)}>→</button></div></div>
+      <div className="ws-pagination"><small>Hiển thị {visible.length} trong {filtered.length} link</small><div><button aria-label="Trang trước" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>←</button>{Array.from({ length: pageCount }, (_, i) => <button key={i} className={currentPage === i + 1 ? "ws-page-active" : ""} onClick={() => setPage(i + 1)}>{i + 1}</button>)}<button aria-label="Trang sau" disabled={currentPage >= pageCount} onClick={() => setPage(currentPage + 1)}>→</button></div></div>
     </Panel>
-    {selected && <Panel className="ws-actions-panel"><p><strong>{selected.name}</strong><span>· Truy cập gần nhất: 5 phút trước</span></p><div className="ws-file-actions"><Button href={`/share?file=${encodeURIComponent(selected.id)}`}><Asset screen="5-10" name="imgIconLink" />Chia sẻ</Button><Button variant="secondary" href={`/create?edit=${encodeURIComponent(selected.id)}`}>Đổi đường dẫn</Button><Button variant="secondary" onClick={() => { setExpires(selected.expiresAt.slice(0, 10)); setModal("extend"); }}>Gia hạn link</Button><Button variant="secondary" onClick={() => { updateFile(selected.id, { status: selected.status === "disabled" ? "active" : "disabled" }); toast(selected.status === "disabled" ? "Đã kích hoạt đường link" : "Đã tạm vô hiệu hóa đường link"); }}>{selected.status === "disabled" ? "Kích hoạt link" : "Tạm vô hiệu hóa"}</Button><Button variant="danger" onClick={() => setModal("delete")}>Xóa link</Button></div></Panel>}
-    {modal === "delete" && selected && <Modal title="Xóa đường link này?" onClose={() => setModal(null)}><p>Người nhận sẽ không thể truy cập qua link này sau khi bạn xóa.</p><div className="ws-modal-actions"><Button variant="secondary" onClick={() => setModal(null)}>Giữ lại</Button><Button variant="danger" onClick={() => { deleteFile(selected.id); setSelectedId(""); setModal(null); toast("Đã xóa đường link"); }}>Xóa đường link</Button></div></Modal>}
-    {modal === "extend" && selected && <Modal title="Gia hạn đường link" onClose={() => setModal(null)}><p>{selected.name}</p><form className="ws-stack" onSubmit={event => { event.preventDefault(); updateFile(selected.id, { expiresAt: expires, status: "active" }); setModal(null); toast("Đã gia hạn đường link"); }}><Field type="date" label="Thời hạn truy cập mới" value={expires} min={new Date().toISOString().slice(0, 10)} required onChange={event => setExpires(event.target.value)} /><div className="ws-modal-actions"><Button variant="secondary" type="button" onClick={() => setModal(null)}>Hủy</Button><Button type="submit">Lưu thời hạn</Button></div></form></Modal>}
+    {selected && <Panel className="ws-actions-panel"><p><strong>{selected.name}</strong><span>· Lượt truy cập: {selected.views}</span></p><div className="ws-file-actions"><Button href={`/share?file=${encodeURIComponent(selected.id)}`}><Asset screen="5-10" name="imgIconLink" />Chia sẻ</Button><Button variant="secondary" onClick={() => toast("Backend chưa hỗ trợ chỉnh sửa hoặc gia hạn link đã tạo. Hãy tạo link mới với cài đặt mong muốn.")}>Chỉnh quyền / gia hạn</Button><Button variant="danger" onClick={() => { setActionError(""); setModal("delete"); }}>Xóa link</Button></div></Panel>}
+    {modal === "delete" && selected && <Modal title="Xóa đường link này?" onClose={() => setModal(null)}><p>Người nhận sẽ không thể truy cập qua link này sau khi bạn xóa.</p>{actionError && <p className="ws-error-text" role="alert">{actionError}</p>}<div className="ws-modal-actions"><Button variant="secondary" onClick={() => setModal(null)}>Giữ lại</Button><Button variant="danger" onClick={async () => { try { await apiRequest(`/links/${Number(selected.id)}`, { method: "DELETE" }); deleteFile(selected.id); setSelectedId(""); setModal(null); toast("Đã xóa đường link"); } catch (error) { setActionError(error instanceof Error ? error.message : "Không thể xóa link."); } }}>Xóa đường link</Button></div></Modal>}
+    {modal === "extend" && selected && <Modal title="Gia hạn đường link" onClose={() => setModal(null)}><p>Backend hiện chưa có API gia hạn. Tạo link mới để chọn thời hạn khác.</p><div className="ws-modal-actions"><Button variant="secondary" onClick={() => setModal(null)}>Đóng</Button><Button href="/create">Tạo link mới</Button></div></Modal>}
   </div></WorkspaceShell>;
 }
 
 export function AnalyticsScreen() {
-  const { files } = useApp();
+  const { files, user } = useApp();
   const params = useSearchParams();
-  const file = files.find(item => item.id === params.get("file")) ?? files[0];
-  const [day, setDay] = useState<number | null>(null);
-  return <WorkspaceShell active="analytics"><div className="ws-screen"><Heading screen="5-13" title="Hiểu cách file được chia sẻ" description={`${file?.name || "Brand Guidelines.pdf"} · ${file?.url.replace(/^https?:\/\//, "") || "xfile.app/minhlam/brand-kit"}`} /><Stats items={[{ label: "LƯỢT XEM", value: file?.views ?? 428, note: "↑ 24% trong 7 ngày" }, { label: "LƯỢT TẢI", value: file?.downloads ?? 126, note: `Tỷ lệ tải ${file?.views ? (file.downloads / file.views * 100).toFixed(1).replace(".", ",") : "29,4"}%` }, { label: "KHÁCH DUY NHẤT", value: 89, note: "32 khách quay lại" }, { label: "TRUY CẬP GẦN NHẤT", value: "5 phút", note: "28/09/2026 · 10:25" }]} />
-    <Panel className="ws-chart-panel"><div className="ws-panel-heading"><h2>Hoạt động trong 7 ngày</h2><div className="ws-chart-legend"><span className="ws-badge ws-primary">● Lượt xem</span><span className="ws-badge ws-cyan">● Lượt tải</span></div></div><Chart day={day} setDay={setDay} /><div className="ws-chart-dates">{[22, 23, 24, 25, 26, 27, 28].map(date => <small key={date}>{date}/09</small>)}</div></Panel>
-    <div className="ws-two-columns"><Panel className="ws-recent"><h2>Truy cập gần đây</h2>{["10:25   ·   Khách #089   ·   Xem file", "10:18   ·   Khách #088   ·   Tải xuống", "09:46   ·   Khách #087   ·   Xem file"].map(text => <p key={text}>{text}</p>)}</Panel><Panel className="ws-link-controls"><h2>Quản lý đường link</h2><Button variant="secondary" href={`/create?edit=${encodeURIComponent(file?.id ?? "")}`}>Chỉnh sửa quyền truy cập</Button><Button href={`/share?file=${encodeURIComponent(file?.id ?? "")}`}><Asset screen="5-13" name="imgIconLink" />Chia sẻ file</Button></Panel></div>
+  const router = useRouter();
+  const analyticsFiles = [...new Map(files.map(item => [item.sourceFileId, item])).values()];
+  const selectedFile = analyticsFiles.find(item => item.id === params.get("file")) ?? analyticsFiles[0];
+  const [days, setDays] = useState(7);
+  const [analytics, setAnalytics] = useState<LinkAnalytics | null>(null);
+  const [loadedKey, setLoadedKey] = useState("");
+  const [requestError, setRequestError] = useState<{ key: string; message: string } | null>(null);
+  const requestKey = selectedFile ? `${selectedFile.id}:${days}` : "";
+
+  useEffect(() => {
+    if (!selectedFile) return;
+    let active = true;
+    apiRequest<LinkAnalytics>(`/links/${Number(selectedFile.id)}/analytics?days=${days}`)
+      .then(result => {
+        if (!active) return;
+        setAnalytics(result);
+        setLoadedKey(requestKey);
+        setRequestError(null);
+      })
+      .catch(error => {
+        if (!active) return;
+        setRequestError({
+          key: requestKey,
+          message: error instanceof Error ? error.message : "Không thể tải thống kê.",
+        });
+      });
+    return () => { active = false; };
+  }, [selectedFile, days, requestKey]);
+
+  const current = loadedKey === requestKey ? analytics : null;
+  const error = requestError?.key === requestKey ? requestError.message : "";
+  const loading = !!selectedFile && !current && !error;
+  const formatDateTime = (value: string | null) => value
+    ? new Intl.DateTimeFormat("vi-VN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value))
+    : "Chưa có hoạt động";
+  const maxDaily = Math.max(1, ...(current?.daily.map(item => Math.max(item.view_count, item.download_count)) || []));
+
+  return <WorkspaceShell active="analytics"><div className="ws-screen">
+    <Heading screen="5-13" title="Phân tích đường link" description={selectedFile?.name || "Chọn một link để xem thống kê"} />
+    {user && analyticsFiles.length > 0 && <div className="ws-analytics-controls">
+    <label>File<select aria-label="Chọn file xem thống kê" value={selectedFile?.id || ""} onChange={event => router.push(`/analytics?file=${encodeURIComponent(event.target.value)}`)}>{analyticsFiles.map(item => <option key={item.sourceFileId} value={item.id}>{item.name}</option>)}</select></label>
+      <label>Khoảng thời gian<select value={days} onChange={event => setDays(Number(event.target.value))}><option value={7}>7 ngày</option><option value={30}>30 ngày</option><option value={90}>90 ngày</option></select></label>
+    </div>}
+    {!user && <Panel className="ws-empty"><h2>Đăng nhập để xem thống kê</h2><p>Thống kê chỉ hiển thị cho chủ sở hữu link.</p><Button href="/login">Đăng nhập</Button></Panel>}
+    {user && analyticsFiles.length === 0 && <Panel className="ws-empty"><h2>Chưa có link nào</h2><p>Tạo link để bắt đầu ghi nhận lượt xem và lượt tải.</p><Button href="/create">Tạo link mới</Button></Panel>}
+    {selectedFile && <Stats items={[
+      { label: "LƯỢT XEM", value: current?.totals.view_count ?? (loading ? "…" : "—"), note: `${days} ngày gần nhất` },
+      { label: "LƯỢT TẢI", value: current?.totals.download_count ?? (loading ? "…" : "—"), note: `${days} ngày gần nhất` },
+      { label: "NGƯỜI TRUY CẬP DUY NHẤT", value: current?.totals.unique_visitors ?? (loading ? "…" : "—"), note: "Tính theo mã ẩn danh trên trình duyệt" },
+      { label: "TRUY CẬP GẦN NHẤT", value: current ? formatDateTime(current.all_time.last_accessed_at) : loading ? "…" : "—", note: "Tính từ hoạt động xem hoặc tải" },
+    ]} />}
+    {error && <Panel className="ws-analytics-error" role="alert"><p>{error}</p></Panel>}
+    {current && <p className="ws-analytics-all-time">Toàn thời gian: {current.all_time.view_count} lượt xem · {current.all_time.download_count} lượt tải · {current.all_time.unique_visitors} người truy cập duy nhất</p>}
+    {selectedFile && <Panel className="ws-chart-panel"><div className="ws-panel-heading"><h2>Hoạt động theo ngày</h2><div className="ws-chart-legend"><span className="ws-badge ws-primary">● Lượt xem</span><span className="ws-badge ws-cyan">● Lượt tải</span></div></div>
+      {current ? <div className="ws-analytics-chart" role="img" aria-label={`Biểu đồ lượt xem và lượt tải trong ${days} ngày`}>
+        {current.daily.map(item => <div className="ws-analytics-day" key={item.date} title={`${item.date}: ${item.view_count} lượt xem, ${item.download_count} lượt tải`}>
+          <div className="ws-analytics-bars"><span className="ws-analytics-view-bar" style={{ height: `${item.view_count / maxDaily * 100}%` }} /><span className="ws-analytics-download-bar" style={{ height: `${item.download_count / maxDaily * 100}%` }} /></div>
+          <small>{new Intl.DateTimeFormat("vi-VN", { day: "2-digit", month: "2-digit", timeZone: "UTC" }).format(new Date(`${item.date}T00:00:00Z`))}</small>
+          <span className="ws-sr-only">{item.view_count} lượt xem, {item.download_count} lượt tải</span>
+        </div>)}
+      </div> : loading ? <p className="ws-analytics-placeholder">Đang tải dữ liệu thống kê…</p> : error ? <p className="ws-analytics-placeholder">Không có dữ liệu để hiển thị.</p> : null}
+    </Panel>}
+    <div className="ws-two-columns">
+      {selectedFile && <Panel className="ws-recent"><h2>Hoạt động gần đây</h2>
+        {!current && loading && <p>Đang tải hoạt động…</p>}
+        {current?.recent_activity.map((activity, index) => <p className="ws-activity-row" key={`${activity.occurred_at}-${activity.event_type}-${index}`}><span>{activity.event_type === "view" ? "Lượt xem link" : "Tải file"}</span><time dateTime={activity.occurred_at}>{formatDateTime(activity.occurred_at)}</time></p>)}
+        {current?.recent_activity.length === 0 && <p>Chưa có hoạt động trong kỳ thống kê.</p>}
+      </Panel>}
+      {selectedFile && <Panel className="ws-link-controls"><h2>Link đang xem</h2><p>{current?.file.share_path || selectedFile.sharePath || selectedFile.url}</p><Button href={`/share?file=${encodeURIComponent(selectedFile.id)}`}><Asset screen="5-13" name="imgIconLink" />Mở trang chia sẻ</Button></Panel>}
+    </div>
   </div></WorkspaceShell>;
 }
 
@@ -145,7 +200,7 @@ export function TeamsScreen() {
   function changeMembers(members: Member[]) { setTeams(current => current.map(item => item.id === team?.id ? { ...item, members } : item)); }
   function invite(event: FormEvent) { event.preventDefault(); if (!team) return; if (team.members.some(member => member.email === email.trim())) { toast("Email này đã có trong nhóm"); return; } changeMembers([...team.members, { id: crypto.randomUUID(), name: email.split("@")[0], email: email.trim(), role }]); setEmail(""); toast("Đã thêm thành viên vào nhóm mẫu"); }
   function create(event: FormEvent) { event.preventDefault(); if (!newName.trim()) { toast("Vui lòng nhập tên nhóm"); return; } const emails = newEmails.split(",").map(value => value.trim()).filter(Boolean); if (emails.some(value => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))) { toast("Vui lòng kiểm tra lại email mời"); return; } const newTeam: Team = { id: crypto.randomUUID(), name: newName.trim(), members: [{ id: "minh", name: user?.name || "Minh Lâm", email: user?.email || "minhlam@example.com", role: "Chủ nhóm" }, ...emails.map(value => ({ id: crypto.randomUUID(), name: value.split("@")[0], email: value, role: "Thành viên" }))] }; setTeams(current => [...current, newTeam]); setTeamId(newTeam.id); setTeamName(newTeam.name); setCreateModal(false); setNewName(""); setNewEmails(""); toast("Đã tạo nhóm mới"); }
-  return <WorkspaceShell active="teams"><div className="ws-screen"><Heading screen="5-14" title="Làm việc cùng nhau" description="Quản lý thành viên, quyền truy cập và file dùng chung." action={false} /><div className="ws-team-select"><select aria-label="Chọn nhóm" value={team?.id || ""} onChange={event => { setTeamId(event.target.value); setTeamName(teams.find(item => item.id === event.target.value)?.name ?? ""); }}>{teams.length === 0 && <option value="">Chưa có nhóm</option>}{teams.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><span className="ws-badge ws-cyan">{team?.members.length ?? 0} thành viên</span><Button className="ws-new-team" onClick={() => setCreateModal(true)}><Asset screen="5-14" name="imgIconPlus1" />Tạo nhóm mới</Button></div>
+  return <WorkspaceShell active="teams"><div className="ws-screen"><Heading screen="5-14" title="Làm việc cùng nhau" description="Bản giao diện nhóm mẫu; backend hiện chưa có API quản lý nhóm." action={false} /><div className="ws-team-select"><select aria-label="Chọn nhóm" value={team?.id || ""} onChange={event => { setTeamId(event.target.value); setTeamName(teams.find(item => item.id === event.target.value)?.name ?? ""); }}>{teams.length === 0 && <option value="">Chưa có nhóm</option>}{teams.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><span className="ws-badge ws-cyan">{team?.members.length ?? 0} thành viên</span><Button className="ws-new-team" onClick={() => setCreateModal(true)}><Asset screen="5-14" name="imgIconPlus1" />Tạo nhóm mới</Button></div>
     {team ? <><div className="ws-team-columns"><Panel className="ws-members-panel"><div className="ws-panel-heading"><h2>Thành viên</h2><Button onClick={() => inviteRef.current?.focus()}><Asset screen="5-14" name="imgIconPlus1" />Mời thành viên</Button></div><div className="ws-members">{team.members.map(member => <div className="ws-member" key={member.id}><span className="ws-badge ws-cyan ws-initials">{member.name.split(" ").map(part => part[0]).slice(0, 2).join("").toUpperCase()}</span><div className="ws-member-info"><strong>{member.name}</strong><small>{member.email}</small></div>{member.role === "Chủ nhóm" ? <span className="ws-owner">Chủ nhóm</span> : <><select aria-label={`Vai trò của ${member.name}`} value={member.role} onChange={event => { changeMembers(team.members.map(item => item.id === member.id ? { ...item, role: event.target.value } : item)); toast("Đã cập nhật vai trò"); }}><option>Quản trị viên</option><option>Thành viên</option><option>Chỉ xem</option></select><button className="ws-remove" onClick={() => setRemoveId(member.id)}>Xóa</button></>}</div>)}</div><form className="ws-invite" onSubmit={invite}><label>Email thành viên mới<input ref={inviteRef} type="email" placeholder="name@example.com" value={email} required onChange={event => setEmail(event.target.value)} /></label><label>Vai trò<select value={role} onChange={event => setRole(event.target.value)}><option>Thành viên</option><option>Quản trị viên</option><option>Chỉ xem</option></select></label>{email && <Button type="submit">Gửi lời mời</Button>}</form><small className="ws-subtle">Chỉ quản trị viên và chủ nhóm được quản lý thành viên.</small></Panel>
     <Panel className="ws-team-storage"><h2>Kho lưu trữ chung</h2><strong className="ws-storage-value">3,2 GB</strong><p>đã dùng trong 10 GB</p><div className="ws-progress"><span style={{ width: "32%" }} /></div><hr /><h3>Cài đặt nhóm</h3><Field label="Tên nhóm" value={teamName} onChange={event => setTeamName(event.target.value)} /><Button variant="secondary" disabled={!teamName.trim()} onClick={() => { setTeams(current => current.map(item => item.id === team.id ? { ...item, name: teamName.trim() } : item)); toast("Đã lưu tên nhóm"); }}>Lưu tên nhóm</Button><Button href={`/share?team=${encodeURIComponent(team.id)}`}><Asset screen="5-14" name="imgIconLink" />Chia sẻ link nhóm</Button><small>Link nhóm có mã QR và thời hạn truy cập.</small><hr /><Button variant="danger" onClick={() => setDissolve(true)}>Giải tán nhóm</Button></Panel></div>
     <Panel className="ws-shared-files"><h2>Link nội bộ nhóm</h2><div className="ws-team-file"><div className="ws-team-file-info"><span className="ws-file-type"><Asset screen="5-14" name="imgIconFile1" /></span><div><strong>Sprint assets.zip</strong><small>428 MB · Linh Trần · Chỉ {team.name}</small></div></div><span className="ws-badge ws-amber">Hết hạn 03/10</span><Button variant="secondary" href={`/analytics?file=${encodeURIComponent(sprint?.id ?? "")}`}>Xem thống kê</Button><Button href={`/share?file=${encodeURIComponent(sprint?.id ?? "")}`}>Chia sẻ</Button></div></Panel></> : <Panel className="ws-empty"><h2>Chưa có nhóm nào</h2><p>Tạo một không gian chung cho file và thành viên của bạn.</p><Button onClick={() => setCreateModal(true)}>Tạo nhóm mới</Button></Panel>}
@@ -161,17 +216,52 @@ function PasswordField({ label, value, onChange, placeholder }: { label: string;
 }
 
 export function SettingsScreen() {
-  const { user, signIn, signOut, theme, setTheme, toast } = useApp();
+  const { user, updateUser, signOut, theme, setTheme, toast } = useApp();
   const router = useRouter();
   const [editedName, setEditedName] = useState<string | null>(null);
   const name = editedName ?? user?.name ?? "Minh Lâm";
-  const [currentPassword, setCurrentPassword] = useState("minhlam2026");
+  const [currentPassword, setCurrentPassword] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
+  const [profileError, setProfileError] = useState("");
   const [logout, setLogout] = useState(false);
-  function updatePassword(event: FormEvent) { event.preventDefault(); if (password.length < 8 || !/[a-zA-Z]/.test(password) || !/\d/.test(password)) { setError("Sử dụng ít nhất 8 ký tự, gồm chữ và số."); return; } if (password !== confirm) { setError("Mật khẩu xác nhận chưa khớp."); return; } setError(""); setPassword(""); setConfirm(""); setCurrentPassword(""); toast("Đã xác nhận đổi mật khẩu trong bản giao diện mẫu"); }
-  return <WorkspaceShell active="settings"><div className="ws-screen"><Heading screen="5-15" title="Cài đặt tài khoản" description="Cập nhật thông tin cá nhân và bảo mật của bạn." /><div className="ws-two-columns"><div className="ws-settings-main"><Panel className="ws-profile"><h2>Thông tin cá nhân</h2><div className="ws-identity"><span className="ws-badge ws-cyan ws-initials">{(user?.name || "Minh Lâm").split(" ").map(part => part[0]).slice(0, 2).join("").toUpperCase()}</span><div><strong>{user?.name || "Minh Lâm"}</strong><small>{user?.email || "minhlam@example.com"}</small></div></div><form className="ws-stack" onSubmit={event => { event.preventDefault(); signIn(name.trim()); toast("Đã lưu thông tin cá nhân"); }}><Field label="Tên hiển thị" value={name} required onChange={event => setEditedName(event.target.value)} /><Button type="submit" className="ws-save-profile" disabled={!name.trim()}>Lưu thay đổi</Button></form></Panel><Panel className="ws-security"><h2>Bảo mật</h2><form className="ws-stack" onSubmit={updatePassword}><PasswordField label="Mật khẩu hiện tại" value={currentPassword} onChange={setCurrentPassword} /><div className="ws-password-columns"><PasswordField label="Mật khẩu mới" placeholder="Nhập mật khẩu mới" value={password} onChange={setPassword} /><PasswordField label="Xác nhận mật khẩu" placeholder="Nhập lại mật khẩu" value={confirm} onChange={setConfirm} /></div><small className={error ? "ws-error-text" : "ws-subtle"}>{error || "Sử dụng ít nhất 8 ký tự, gồm chữ và số."}</small><Button variant="secondary" type="submit" className="ws-change-password">Đổi mật khẩu</Button></form></Panel><Panel className="ws-theme"><h2>Giao diện</h2><p>Chọn giao diện phù hợp với không gian làm việc của bạn.</p><div className="ws-theme-options"><Button variant={theme === "dark" ? "primary" : "secondary"} onClick={() => setTheme("dark")}>Tối</Button><Button variant={theme === "light" ? "primary" : "secondary"} onClick={() => setTheme("light")}>Sáng</Button></div></Panel></div><Panel className="ws-plan"><span className="ws-badge ws-cyan">TÀI KHOẢN CÁ NHÂN</span><h2>Không gian của bạn</h2><strong className="ws-storage-value">1,8 / 5 GB</strong><p>Dung lượng đã sử dụng</p><hr /><ul>{["File tối đa 500 MB", "Quản lý quyền truy cập", "Thống kê từng file", "Chia sẻ theo nhóm"].map(text => <li key={text}><Asset screen="5-15" name="imgIconCheck" />{text}</li>)}</ul><hr /><Button variant="danger" onClick={() => setLogout(true)}>Đăng xuất</Button><small>Đăng xuất khỏi phiên làm việc này.</small></Panel></div>{logout && <Modal title="Đăng xuất khỏi xFile?" onClose={() => setLogout(false)}><p>Bạn có thể đăng nhập lại để tiếp tục quản lý file.</p><div className="ws-modal-actions"><Button variant="secondary" onClick={() => setLogout(false)}>Hủy</Button><Button variant="danger" onClick={() => { signOut(); router.push("/login"); }}>Đăng xuất</Button></div></Modal>}</div></WorkspaceShell>;
+  async function saveProfile(event: FormEvent) {
+    event.preventDefault();
+    setProfileError("");
+    try {
+      const profile = await apiRequest<UserProfile>("/users/me", {
+        method: "PATCH",
+        body: JSON.stringify({ display_name: name.trim() }),
+      });
+      updateUser(profile);
+      setEditedName(null);
+      toast("Đã cập nhật tên hiển thị.");
+    } catch (requestError) {
+      setProfileError(requestError instanceof Error ? requestError.message : "Không thể cập nhật tên.");
+    }
+  }
+  async function updatePassword(event: FormEvent) {
+    event.preventDefault();
+    if (password.length < 8 || !/[a-zA-Z]/.test(password) || !/\d/.test(password)) { setError("Sử dụng ít nhất 8 ký tự, gồm chữ và số."); return; }
+    if (password !== confirm) { setError("Mật khẩu xác nhận chưa khớp."); return; }
+    setError("");
+    try {
+      await apiRequest("/users/me/password", {
+        method: "PATCH",
+        body: JSON.stringify({ current_password: currentPassword, new_password: password, confirm_password: confirm }),
+      });
+      setPassword("");
+      setConfirm("");
+      setCurrentPassword("");
+      toast("Đã đổi mật khẩu. Vui lòng đăng nhập lại.");
+      signOut();
+      router.push("/login");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Không thể đổi mật khẩu.");
+    }
+  }
+  return <WorkspaceShell active="settings"><div className="ws-screen"><Heading screen="5-15" title="Cài đặt tài khoản" description="Cập nhật thông tin cá nhân và bảo mật của bạn." /><div className="ws-two-columns"><div className="ws-settings-main"><Panel className="ws-profile"><h2>Thông tin cá nhân</h2><div className="ws-identity"><span className="ws-badge ws-cyan ws-initials">{(user?.name || "Tài khoản").split(" ").map(part => part[0]).slice(0, 2).join("").toUpperCase()}</span><div><strong>{user?.name || "Tài khoản"}</strong><small>{user?.email || "Chưa đăng nhập"}</small></div></div><form className="ws-stack" onSubmit={saveProfile}><Field label="Tên hiển thị" value={name} required onChange={event => setEditedName(event.target.value)} />{profileError && <small className="ws-error-text" role="alert">{profileError}</small>}<Button type="submit" className="ws-save-profile" disabled={!name.trim()}>Lưu thay đổi</Button></form></Panel><Panel className="ws-security"><h2>Bảo mật</h2><form className="ws-stack" onSubmit={updatePassword}><PasswordField label="Mật khẩu hiện tại" value={currentPassword} onChange={setCurrentPassword} /><div className="ws-password-columns"><PasswordField label="Mật khẩu mới" placeholder="Nhập mật khẩu mới" value={password} onChange={setPassword} /><PasswordField label="Xác nhận mật khẩu" placeholder="Nhập lại mật khẩu" value={confirm} onChange={setConfirm} /></div><small className={error ? "ws-error-text" : "ws-subtle"} role={error ? "alert" : undefined}>{error || "Sử dụng ít nhất 8 ký tự, gồm chữ và số."}</small><Button variant="secondary" type="submit" className="ws-change-password">Đổi mật khẩu</Button></form></Panel><Panel className="ws-theme"><h2>Giao diện</h2><p>Chọn giao diện phù hợp với không gian làm việc của bạn.</p><div className="ws-theme-options"><Button variant={theme === "dark" ? "primary" : "secondary"} onClick={() => setTheme("dark")}>Tối</Button><Button variant={theme === "light" ? "primary" : "secondary"} onClick={() => setTheme("light")}>Sáng</Button></div></Panel></div><Panel className="ws-plan"><span className="ws-badge ws-cyan">TÀI KHOẢN CÁ NHÂN</span><h2>Không gian của bạn</h2><strong className="ws-storage-value">Tối đa 500 MB / file</strong><p>{user ? user.email : "Chưa đăng nhập"}</p><hr /><ul>{["Quản lý quyền truy cập", "Thống kê số lượt truy cập và tải"].map(text => <li key={text}><Asset screen="5-15" name="imgIconCheck" />{text}</li>)}</ul><hr /><Button variant="danger" onClick={() => setLogout(true)}>Đăng xuất</Button><small>Đăng xuất khỏi phiên làm việc này.</small></Panel></div>{logout && <Modal title="Đăng xuất khỏi xFile?" onClose={() => setLogout(false)}><p>Bạn có thể đăng nhập lại để tiếp tục quản lý file.</p><div className="ws-modal-actions"><Button variant="secondary" onClick={() => setLogout(false)}>Hủy</Button><Button variant="danger" onClick={() => { signOut(); router.push("/login"); }}>Đăng xuất</Button></div></Modal>}</div></WorkspaceShell>;
 }
 
 const notificationList = [{ id: "expiry-proposal", title: "Project proposal.pdf sắp hết hạn", description: "Link sẽ hết hạn trong 18 giờ. Gia hạn để người nhận tiếp tục truy cập.", time: "10 phút trước", action: "Gia hạn link", icon: "imgIconClock", kind: "extend" }, { id: "expiry-report", title: "Báo cáo tháng 9.xlsx sắp hết hạn", description: "Link sẽ hết hạn trong 23 giờ. Kiểm tra trước khi gửi cho người nhận mới.", time: "35 phút trước", action: "Xem link", icon: "imgIconClock", kind: "view" }, { id: "reported", title: "Có báo cáo về một đường link", description: "Một người nhận đã báo cáo Sprint assets.zip. Vui lòng kiểm tra nội dung chia sẻ.", time: "1 giờ trước", action: "Xem báo cáo", icon: "imgIconBell2", kind: "report" }, { id: "joined", title: "Linh Trần đã tham gia Design Team", description: "Nhóm hiện có 4 thành viên. Bạn có thể điều chỉnh vai trò trong quản lý nhóm.", time: "Hôm qua", action: "Quản lý nhóm", icon: "imgIconTeam1", kind: "team" }];

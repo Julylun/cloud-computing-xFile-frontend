@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useApp, type DemoFile } from "@/components/app-provider";
 import { Badge, Button, Field, Panel, WorkspaceShell } from "@/components/ui";
+import { apiRequest, downloadSharedFile, type BackendLink, toDemoFile } from "@/lib/api";
 import "@/styles/sharing.css";
 
 const QRCode = {
@@ -22,20 +23,21 @@ type ShareSettings = {
   password: string;
   passwordEnabled: boolean;
   expiry: string;
+  expiryMode: "none" | "time" | "access_count";
   maxViews: number;
   maxDownloads: number;
   slug: string;
   guest?: boolean;
 };
-type SelectedFile = { name: string; size: string; type: string; sourceUrl?: string; demo?: boolean };
+type SelectedFile = { name: string; size: string; type: string; sourceUrl?: string; demo?: boolean; rawFile?: File };
 type SharedTeam = { id: string; name: string; members: { email: string }[] };
 
 const SETTINGS_KEY = "xfile-share-settings-v1";
 let sessionSettings = "{}";
 const defaultSettings: ShareSettings = {
-  mode: "team", team: "Design Team", teamId: "design", email: "", password: "demo12345678",
-  passwordEnabled: true, expiry: "2026-10-14T23:59", maxViews: 100,
-  maxDownloads: 50, slug: "xfile.app/minhlam/brand-kit",
+  mode: "public", team: "", email: "", password: "",
+  passwordEnabled: false, expiry: "", expiryMode: "none", maxViews: 100,
+  maxDownloads: 50, slug: "",
 };
 const guestExample: SelectedFile = { name: "Project proposal.pdf", size: "12,4 MB", type: "PDF", demo: true };
 const registeredExample: SelectedFile = { name: "Brand Guidelines.pdf", size: "24,8 MB", type: "PDF", demo: true };
@@ -58,11 +60,6 @@ function formatSize(bytes: number) {
 
 function validUrl(value: string) {
   try { return ["https:", "http:"].includes(new URL(value).protocol); } catch { return false; }
-}
-
-function sourceName(url: URL) {
-  const name = url.pathname.split("/").filter(Boolean).pop() || url.hostname;
-  try { return decodeURIComponent(name); } catch { return name; }
 }
 
 function expiryTimestamp(value: string) {
@@ -145,7 +142,7 @@ function useFileSelection(limit: number, sample: SelectedFile) {
     if (!selected) return;
     if (selected.size > limit * 1024 * 1024) { toast(`File vượt quá giới hạn ${limit} MB. Vui lòng chọn file nhỏ hơn.`); return; }
     if (progressTimer.current) clearInterval(progressTimer.current);
-    setFile({ name: selected.name, size: formatSize(selected.size), type: selected.name.split(".").pop()?.toUpperCase() || "FILE" });
+    setFile({ name: selected.name, size: formatSize(selected.size), type: selected.name.split(".").pop()?.toUpperCase() || "FILE", rawFile: selected });
     setProgress(0);
     let next = 0;
     progressTimer.current = setInterval(() => {
@@ -162,27 +159,75 @@ export function UploadScreen() {
   const { addFile, toast, user } = useApp();
   const router = useRouter();
   const [source, setSource] = useState<"file" | "link">("file");
-  const [url, setUrl] = useState("");
   const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const selection = useFileSelection(user ? 500 : 200, guestExample);
+  const selection = useFileSelection(user ? 500 : 50, guestExample);
 
-  function createLink() {
+  async function createLink() {
     setError("");
-    if (selection.progress < 100) return;
-    let chosen = selection.file;
-    if (source === "link" || url.trim()) {
-      if (!validUrl(url.trim())) { setError("Vui lòng nhập đường link hợp lệ bắt đầu bằng https:// hoặc http://."); return; }
-      const parsed = new URL(url.trim());
-      chosen = { name: sourceName(parsed), size: "Đường dẫn", type: "LINK", sourceUrl: url.trim() };
+    if (source === "link") {
+      setError("Backend hiện chỉ nhận file upload, chưa hỗ trợ tạo link từ URL.");
+      return;
     }
-    const id = crypto.randomUUID().slice(0, 8);
-    const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
-    const created: DemoFile = { id, name: chosen.name, size: chosen.size, type: chosen.type, url: chosen.sourceUrl || "", access: "public", views: 0, downloads: 0, createdAt: new Date().toISOString(), expiresAt, status: "active" };
-    addFile(created);
-    saveSettings(id, { ...defaultSettings, guest: !user, mode: "public", passwordEnabled: false, expiry: expiresAt, slug: id });
-    toast("Đã tạo link xem thử. File được mô phỏng trong trình duyệt.");
-    router.push(`/share?file=${id}${!user ? "&guest=1" : ""}`);
+    if (!selection.file.rawFile) {
+      setError("Hãy chọn file thật từ thiết bị trước khi tạo link.");
+      return;
+    }
+    if (selection.progress < 100) return;
+    setPending(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", selection.file.rawFile);
+      if (user) {
+        formData.append("upload_type", "file");
+        const uploaded = await apiRequest<{ id: number }>("/files", { method: "POST", body: formData });
+        const link = await apiRequest<BackendLink>("/links", {
+          method: "POST",
+          body: JSON.stringify({
+            file_id: uploaded.id,
+            access_mode: "public",
+            expiry_mode: "time",
+            expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          }),
+        });
+        const created = toDemoFile(link);
+        addFile(created);
+        toast("Đã upload file và tạo link.");
+        router.push(`/share?file=${encodeURIComponent(created.id)}`);
+      } else {
+        const result = await apiRequest<{
+          slug: string;
+          share_path: string;
+          expires_at: string;
+          file: { id: number; original_name: string; size_bytes: string; mime_type: string; created_at: string };
+        }>("/guess/files", { method: "POST", body: formData });
+        const id = result.slug.split("/").pop() || result.slug;
+        const created: DemoFile = {
+          id,
+          name: result.file.original_name,
+          size: formatSize(Number(result.file.size_bytes)),
+          type: result.file.mime_type.split("/").pop()?.toUpperCase() || "FILE",
+          url: result.share_path,
+          sharePath: result.share_path,
+          sourceFileId: result.file.id,
+          access: "public",
+          views: 0,
+          downloads: 0,
+          createdAt: result.file.created_at,
+          expiresAt: result.expires_at,
+          status: "active",
+        };
+        addFile(created);
+        saveSettings(id, { ...defaultSettings, guest: true, slug: result.share_path, expiry: result.expires_at, expiryMode: "time" });
+        toast("Đã upload file khách. Link có hiệu lực 24 giờ.");
+        router.push(`/share?file=${encodeURIComponent(id)}&guest=1`);
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Không thể upload file hoặc tạo link.");
+    } finally {
+      setPending(false);
+    }
   }
 
   return <main className="sharing-guest-page">
@@ -195,26 +240,26 @@ export function UploadScreen() {
         </div>
         {source === "file" ? <>
           <div className={`sharing-dropzone${dragging ? " is-dragging" : ""}`} onDragOver={event => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={event => { event.preventDefault(); setDragging(false); selection.selectFile(event.dataTransfer.files[0]); }}>
-            <SharingAsset node="5-3" name="IconUpload1" /><h2>Kéo thả file vào đây</h2><p>hoặc chọn từ thiết bị · tối đa {user ? 500 : 200} MB</p><Button variant="secondary" onClick={() => selection.inputRef.current?.click()}>Chọn file</Button>
+            <SharingAsset node="5-3" name="IconUpload1" /><h2>Kéo thả file vào đây</h2><p>hoặc chọn từ thiết bị · tối đa {user ? 500 : 50} MB</p><Button variant="secondary" onClick={() => selection.inputRef.current?.click()}>Chọn file</Button>
           </div>
           {selection.input}<FileCard file={selection.file} progress={selection.progress} status={selection.progress < 100 ? `Đang chuẩn bị bản xem thử · ${selection.progress}%` : undefined} />
         </> : <div className="sharing-link-intro"><SharingAsset node="5-3" name="IconLink" /><h2>Chia sẻ mọi đường dẫn</h2><p>Dán link tài liệu, thư mục hoặc website mà bạn muốn chia sẻ.</p></div>}
-        <Field label={source === "file" ? "Hoặc nhập đường link" : "Đường link cần chia sẻ"} type="url" value={url} onChange={event => setUrl(event.target.value)} placeholder="https://" aria-invalid={!!error} aria-describedby={error ? "sharing-url-error" : undefined} />
+        {source === "link" && <p className="sharing-small-text">Backend hiện chỉ hỗ trợ upload file; tạo link từ URL chưa khả dụng.</p>}
         {error && <p role="alert" id="sharing-url-error" className="sharing-error">{error}</p>}
-        <Button onClick={createLink} disabled={selection.progress < 100} className="sharing-full-button"><SharingAsset node="5-3" name="IconLink1" />Tạo link chia sẻ</Button>
+        <Button onClick={createLink} disabled={pending || selection.progress < 100} className="sharing-full-button"><SharingAsset node="5-3" name="IconLink1" />{pending ? "Đang upload…" : "Tạo link chia sẻ"}</Button>
         <p className="sharing-small-text">Đăng nhập để đặt mật khẩu, tùy chỉnh hạn dùng và quản lý link.</p>
       </Panel>
       <Panel className="sharing-benefits-panel"><Badge>NHIỀU QUYỀN KIỂM SOÁT HƠN</Badge><h2>File lớn hơn. <br />Chia sẻ thông minh hơn.</h2>
-        <ul>{["Upload file đến 500 MB", "Mật khẩu & giới hạn truy cập", "Theo dõi lượt xem, lượt tải", "Không gian làm việc nhóm"].map(item => <li key={item}><SharingAsset node="5-3" name="IconCheck" /><span>{item}</span></li>)}</ul>
+        <ul>{["Khách: tối đa 50 MB, hết hạn sau 24 giờ", "Tài khoản: upload đến 500 MB", "Tài khoản: mật khẩu & giới hạn tải", "Quản lý link khi đăng nhập"].map(item => <li key={item}><SharingAsset node="5-3" name="IconCheck" /><span>{item}</span></li>)}</ul>
         <Button href="/register" className="sharing-full-button">Đăng ký tài khoản</Button>
       </Panel>
     </div>
-    <p className="sharing-demo-note">Bản xem thử giao diện · File chỉ được chọn trên thiết bị, không tải lên máy chủ.</p>
+    <p className="sharing-demo-note">{user ? "File sẽ được tải lên máy chủ khi bạn tạo link." : "Khách có thể upload file tối đa 50 MB; link tự hết hạn sau 24 giờ."}</p>
   </main>;
 }
 
 export function CreateScreen() {
-  const { files, addFile, updateFile, toast } = useApp();
+  const { files, addFile, toast } = useApp();
   const router = useRouter();
   const params = useSearchParams();
   const editingId = params.get("edit") || "";
@@ -226,6 +271,7 @@ export function CreateScreen() {
   const [settings, setSettings] = useState<ShareSettings>(defaultSettings);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
   const lastEditing = useRef("");
   useEffect(() => {
     if (!existing || lastEditing.current === existing.id) return;
@@ -244,30 +290,59 @@ export function CreateScreen() {
     selection.setFile(registeredExample); setSettings(defaultSettings); setError("");
     if (editingId) router.push("/create");
   }
-  function submit() {
+  async function submit() {
     setError("");
+    if (editingId) {
+      setError("Backend chưa có API chỉnh sửa cấu hình link đã tạo. Hãy tạo link mới với cài đặt mong muốn.");
+      return;
+    }
     if (selection.progress < 100) return;
+    if (!selection.file.rawFile) { setError("Hãy chọn file thật từ thiết bị trước khi tạo link."); return; }
+    if (settings.mode === "team") { setError("Backend hiện chưa có API quản lý nhóm để cấp quyền cho team."); return; }
     if (settings.mode === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(settings.email)) { setError("Nhập email hợp lệ của người nhận."); return; }
-    if (settings.mode === "team" && !selectedGroup) { setError("Chọn một nhóm đang hoạt động để chia sẻ file."); return; }
     if (settings.passwordEnabled && settings.password.length < 6) { setError("Mật khẩu cần ít nhất 6 ký tự."); return; }
-    if (settings.expiry && new Date(expiryTimestamp(settings.expiry)).getTime() <= Date.now()) { setError("Thời gian hết hạn cần ở trong tương lai."); return; }
-    if (![settings.maxViews, settings.maxDownloads].every(value => Number.isSafeInteger(value) && value >= 1 && value <= 1000000)) { setError("Giới hạn lượt xem và lượt tải phải là số nguyên từ 1 đến 1.000.000."); return; }
+    if (settings.passwordEnabled && settings.mode === "private") { setError("Backend không hỗ trợ đồng thời chế độ Riêng tư và mật khẩu trên cùng một link."); return; }
+    if (settings.expiryMode === "time" && (!settings.expiry || new Date(expiryTimestamp(settings.expiry)).getTime() <= Date.now())) { setError("Thời gian hết hạn cần ở trong tương lai."); return; }
+    if (settings.expiryMode === "access_count" && (!Number.isSafeInteger(settings.maxDownloads) || settings.maxDownloads < 1 || settings.maxDownloads > 1000000)) { setError("Giới hạn lượt tải phải là số nguyên từ 1 đến 1.000.000."); return; }
     const slug = settings.slug.trim().split("/").filter(Boolean).pop() || "";
     if (slug && !/^[a-zA-Z0-9_-]+$/.test(slug)) { setError("Đường dẫn chỉ được chứa chữ, số, dấu gạch ngang và gạch dưới."); return; }
     if (slug.length > 64) { setError("Đường dẫn tùy chỉnh tối đa 64 ký tự."); return; }
-    let id = slug || editingId || crypto.randomUUID().slice(0, 8);
-    if (!editingId && slug === defaultSettings.slug.split("/").pop() && files.some(file => file.id === id)) id = `${slug}-${crypto.randomUUID().slice(0, 4)}`;
-    if (files.some(file => file.id === id && file.id !== editingId)) { setError("Đường dẫn này đã được sử dụng. Hãy chọn một tên khác."); return; }
-    const updated: DemoFile = {
-      id, name: selection.file.name, size: selection.file.size, type: selection.file.type, url: selection.file.sourceUrl || "",
-      access: settings.passwordEnabled ? "password" : settings.mode === "team" ? "private" : settings.mode,
-      views: existing?.views || 0, downloads: existing?.downloads || 0, createdAt: existing?.createdAt || new Date().toISOString(),
-      expiresAt: settings.expiry ? new Date(expiryTimestamp(settings.expiry)).toISOString() : "", status: "active",
-    };
-    if (editingId) updateFile(editingId, updated); else addFile(updated);
-    saveSettings(id, { ...settings, team: selectedGroup?.name || settings.team, teamId: selectedGroup?.id, slug: id, guest: false }, editingId);
-    toast(editingId ? "Đã lưu thay đổi cho link." : "Đã tạo link chia sẻ xem thử.");
-    router.push(`/share?file=${encodeURIComponent(id)}`);
+    setPending(true);
+    try {
+      const uploadData = new FormData();
+      uploadData.append("file", selection.file.rawFile);
+      uploadData.append("upload_type", "file");
+      const uploaded = await apiRequest<{ id: number }>("/files", { method: "POST", body: uploadData });
+      const body: {
+        file_id: number;
+        custom_slug?: string;
+        access_mode: "public" | "private" | "password";
+        password?: string;
+        allowed_emails?: string[];
+        expiry_mode: "none" | "time" | "access_count";
+        expires_at?: string;
+        max_access_count?: number;
+      } = {
+        file_id: uploaded.id,
+        access_mode: settings.passwordEnabled ? "password" : settings.mode === "private" ? "private" : "public",
+        expiry_mode: settings.expiryMode,
+      };
+      if (slug) body.custom_slug = slug;
+      if (settings.passwordEnabled) body.password = settings.password;
+      if (settings.mode === "email") body.allowed_emails = [settings.email.trim()];
+      if (settings.expiryMode === "time") body.expires_at = new Date(expiryTimestamp(settings.expiry)).toISOString();
+      if (settings.expiryMode === "access_count") body.max_access_count = settings.maxDownloads;
+      const link = await apiRequest<BackendLink>("/links", { method: "POST", body: JSON.stringify(body) });
+      const created = toDemoFile(link);
+      addFile(created);
+      saveSettings(created.id, { ...settings, slug: link.share_path, guest: false });
+      toast("Đã upload file và tạo link.");
+      router.push(`/share?file=${encodeURIComponent(created.id)}`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Không thể upload file hoặc tạo link.");
+    } finally {
+      setPending(false);
+    }
   }
   const recipientLabel = settings.mode === "team" ? selectedGroup?.name || "Nhóm không còn khả dụng" : settings.mode === "email" ? settings.email || "Chưa nhập email" : settings.mode === "private" ? "Chỉ bạn" : "Bất kỳ ai có link";
 
@@ -275,7 +350,7 @@ export function CreateScreen() {
     <header className="sharing-create-heading"><div><h1>{editingId ? "Chỉnh sửa link chia sẻ" : "Tạo link chia sẻ"}</h1><p>Chọn file, đặt quyền truy cập và chia sẻ theo cách của bạn.</p></div><Button onClick={resetForm}><SharingAsset node="5-11" name="IconPlus1" />Tạo link mới</Button></header>
     <div className="sharing-create-grid">
       <Panel className="sharing-security-panel">
-        <FileCard file={selection.file} node="5-11" progress={selection.progress} status={selection.progress < 100 ? `Đang chuẩn bị bản xem thử · ${selection.progress}%` : `${selection.file.demo ? "File mẫu · " : ""}500 MB tối đa · Sẵn sàng chia sẻ`} />
+        <FileCard file={selection.file} node="5-11" progress={selection.progress} status={selection.progress < 100 ? `Đang chuẩn bị · ${selection.progress}%` : `${selection.file.demo ? "Chọn file từ thiết bị · " : ""}500 MB tối đa`} />
         <div className="sharing-upload-options"><button onClick={() => selection.inputRef.current?.click()}>↑ Thay file khác</button><span>Tối đa 500 MB mỗi file</span>{selection.input}</div>
         <h2>Ai có thể truy cập?</h2><div className="sharing-access-modes" aria-label="Quyền truy cập">
           {([{ mode: "public", label: "Công khai", icon: "IconGlobe" }, { mode: "private", label: "Riêng tư", icon: "IconLock" }, { mode: "email", label: "Email", icon: "IconMail" }, { mode: "team", label: "Nhóm", icon: "IconTeam1" }] as const).map(item => <Button key={item.mode} variant={settings.mode === item.mode ? "primary" : "secondary"} aria-pressed={settings.mode === item.mode} onClick={() => change("mode", item.mode)}><SharingAsset node="5-11" name={item.icon} />{item.label}</Button>)}
@@ -283,13 +358,15 @@ export function CreateScreen() {
         <div className="sharing-fields-row"><label className="sharing-field-label">Nhóm được truy cập<select value={selectedGroup?.id || ""} disabled={settings.mode !== "team"} onChange={event => { const chosen = teams.find(team => team.id === event.target.value); if (chosen) setSettings(current => ({ ...current, team: chosen.name, teamId: chosen.id })); }}>{!selectedGroup && <option value="">Chọn nhóm</option>}{teams.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><Field label="Email được mời (khi chọn Email)" type="email" disabled={settings.mode !== "email"} value={settings.email} placeholder="Nhập email người nhận" onChange={event => change("email", event.target.value)} /></div>
         <div className="sharing-password-heading"><SharingAsset node="5-11" name="IconLock1" /><span>Bảo vệ bằng mật khẩu</span><button className={`sharing-status-toggle${settings.passwordEnabled ? " is-on" : ""}`} aria-pressed={settings.passwordEnabled} onClick={() => change("passwordEnabled", !settings.passwordEnabled)}>{settings.passwordEnabled ? "Đang bật" : "Đang tắt"}</button></div>
         <label className="sharing-field-label">Mật khẩu truy cập<div className="sharing-password-input"><input type={showPassword ? "text" : "password"} value={settings.password} disabled={!settings.passwordEnabled} onChange={event => change("password", event.target.value)} minLength={6} autoComplete="new-password" /><button aria-label={showPassword ? "Ẩn mật khẩu" : "Hiện mật khẩu"} onClick={() => setShowPassword(value => !value)}><SharingAsset node="5-11" name="IconEye" /></button></div></label>
-        <div className="sharing-divider" /><div className="sharing-fields-row"><Field label="Hết hạn vào" type="datetime-local" value={settings.expiry} onChange={event => change("expiry", event.target.value)} /><label className="sharing-field-label">Giới hạn lượt xem / tải<div className="sharing-limit-input"><input type="number" aria-label="Giới hạn lượt xem" min={1} value={settings.maxViews} onChange={event => change("maxViews", Number(event.target.value) || 1)} /><span>lượt xem /</span><input type="number" aria-label="Giới hạn lượt tải" min={1} value={settings.maxDownloads} onChange={event => change("maxDownloads", Number(event.target.value) || 1)} /><span>lượt tải</span></div></label></div>
+        <div className="sharing-divider" /><label className="sharing-field-label">Điều kiện hết hạn<select value={settings.expiryMode} onChange={event => change("expiryMode", event.target.value as ShareSettings["expiryMode"])}><option value="none">Không giới hạn</option><option value="time">Theo thời gian</option><option value="access_count">Theo số lượt tải</option></select></label>
+        {settings.expiryMode === "time" && <Field label="Hết hạn vào" type="datetime-local" value={settings.expiry} onChange={event => change("expiry", event.target.value)} />}
+        {settings.expiryMode === "access_count" && <Field label="Số lượt tải tối đa" type="number" min={1} max={1000000} value={settings.maxDownloads} onChange={event => change("maxDownloads", Number(event.target.value) || 1)} />}
         <Field className="sharing-custom-path" label="Đường dẫn tùy chỉnh" value={settings.slug} onChange={event => change("slug", event.target.value)} placeholder="brand-kit" aria-describedby="sharing-custom-hint" />
         <p className="sharing-small-text" id="sharing-custom-hint">Link sẽ dừng khi đạt một trong các giới hạn đã đặt.</p>
         {error && <p className="sharing-error" role="alert">{error}</p>}
       </Panel>
-      <Panel className="sharing-summary-panel"><h2>Tóm tắt chia sẻ</h2><dl>{[["File", selection.file.name], ["Dung lượng", selection.file.size], ["Người nhận", recipientLabel], ["Bảo vệ", settings.passwordEnabled ? "Có mật khẩu" : "Không có mật khẩu"], ["Hết hạn", dateLabel(settings.expiry, true)], ["Giới hạn", `${settings.maxViews} lượt xem · ${settings.maxDownloads} lượt tải`]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><div className="sharing-divider" /><Button className="sharing-full-button" onClick={submit} disabled={selection.progress < 100}><SharingAsset node="5-11" name="IconLink" />{editingId ? "Lưu thay đổi" : "Tạo link chia sẻ"}</Button><Button href="/dashboard" variant="ghost" className="sharing-full-button">Hủy</Button><p>Bạn có thể thay đổi quyền hoặc vô hiệu hóa link bất cứ lúc nào.</p></Panel>
-    </div><p className="sharing-demo-note">Bản xem thử giao diện · Quyền truy cập và file được mô phỏng trong trình duyệt.</p>
+      <Panel className="sharing-summary-panel"><h2>Tóm tắt chia sẻ</h2><dl>{[["File", selection.file.name], ["Dung lượng", selection.file.size], ["Người nhận", recipientLabel], ["Bảo vệ", settings.passwordEnabled ? "Có mật khẩu" : "Không có mật khẩu"], ["Hết hạn", settings.expiryMode === "time" ? dateLabel(settings.expiry, true) : "Không giới hạn"], ["Giới hạn", settings.expiryMode === "access_count" ? `${settings.maxDownloads} lượt tải` : "Không giới hạn"]].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><div className="sharing-divider" /><Button className="sharing-full-button" onClick={submit} disabled={pending || selection.progress < 100}><SharingAsset node="5-11" name="IconLink" />{pending ? "Đang tạo link…" : editingId ? "Lưu thay đổi" : "Tạo link chia sẻ"}</Button><Button href="/dashboard" variant="ghost" className="sharing-full-button">Hủy</Button><p>Để thay đổi quyền của link đã tạo, hãy tạo link mới.</p></Panel>
+    </div><p className="sharing-demo-note">Link được tạo trên backend. Backend hiện chưa có API chỉnh sửa bảo mật cho link đã tạo.</p>
   </div></WorkspaceShell>;
 }
 
@@ -316,10 +393,12 @@ export function ShareScreen({ team: isTeamScreen = false }: { team?: boolean }) 
   useEffect(() => {
     if (shareGroupUnavailable) return;
     let alive = true;
-    const shareLink = `${window.location.origin}/g/${encodeURIComponent(id)}${team ? `?team=${encodeURIComponent(teamId)}` : ""}`;
+    const shareLink = file?.sharePath
+      ? `${window.location.origin}/g/${encodeURIComponent(id)}?path=${encodeURIComponent(file.sharePath)}`
+      : `${window.location.origin}/g/${encodeURIComponent(id)}${team ? `?team=${encodeURIComponent(teamId)}` : ""}`;
     QRCode.toDataURL(shareLink, { width: 196, margin: 2, color: { dark: "#111827", light: "#ffffff" }, errorCorrectionLevel: "M" }).then(value => { if (alive) { setQr(value); setLink(shareLink); } }).catch(() => { if (alive) setLink(shareLink); });
     return () => { alive = false; };
-  }, [id, team, teamId, shareGroupUnavailable]);
+  }, [id, team, teamId, shareGroupUnavailable, file?.sharePath]);
   async function copyLink() {
     if (shareGroupUnavailable || !link) return;
     try { await navigator.clipboard.writeText(link); setCopied(true); toast("Đã sao chép link chia sẻ."); }
@@ -341,15 +420,83 @@ export function ShareScreen({ team: isTeamScreen = false }: { team?: boolean }) 
   return <main className={`sharing-success-stage${guest ? " sharing-success-guest" : team ? " sharing-success-team" : ""}`}><Panel className="sharing-success-panel">
     <SuccessIcon node={node} /><h1>Link đã sẵn sàng!</h1><p className="sharing-success-description">{team ? "Mời đồng đội truy cập bằng đường dẫn hoặc mã QR." : "Chia sẻ file bằng đường dẫn hoặc mã QR."}</p>
     <FileCard file={team ? { name: teamName, size: `${group?.members.length || 0} thành viên`, type: "TEAM" } : selected} node={node} status={status} />
-    <div className="sharing-qr-box">{qr ? <img className="sharing-dynamic-qr" src={qr} alt="Mã QR mở đường link chia sẻ" width={196} height={196} /> : <SharingAsset node={node} name={fallbackQr} alt="Mã QR chia sẻ" />}</div>
+    <div className="sharing-qr-box">{qr ? <img className="sharing-dynamic-qr" src={qr} alt="Mã QR mở đường link chia sẻ" width={196} height={196} /> : file?.sharePath ? <p>Mã QR chưa khả dụng cho link từ máy chủ.</p> : <SharingAsset node={node} name={fallbackQr} alt="Mã QR chia sẻ" />}</div>
     <div className="sharing-link-box"><SharingAsset node={node} name="IconLink" /><a href={link || "#"} target="_blank" rel="noreferrer">{link || `/g/${id}`}</a><button onClick={copyLink} aria-label="Sao chép đường link" disabled={!link}><SharingAsset node={node} name="IconCopy" /></button></div>
-    <p className="sharing-expiry">{team ? "Hết hạn 14/10/2026 · Chỉ thành viên được mời" : guest ? "Không cần tài khoản · Upload file đến 200 MB" : `Hết hạn ${dateLabel(file?.expiresAt || settings?.expiry || defaultSettings.expiry)} · ${settings?.maxViews || 100} lượt xem · ${settings?.maxDownloads || 50} lượt tải`}</p>
+    <p className="sharing-expiry">{team ? "Không gian nhóm" : guest ? "Không cần tài khoản · Tối đa 50 MB · Hết hạn sau 24 giờ" : `${file?.expiresAt ? `Hết hạn ${dateLabel(file.expiresAt)}` : "Không giới hạn thời gian"}${file?.maxAccessCount ? ` · Tối đa ${file.maxAccessCount} lượt tải` : ""}`}</p>
     <div className="sharing-success-buttons"><Button onClick={copyLink} disabled={!link}><SharingAsset node={node} name="IconCopy1" />{copied ? "Đã sao chép" : "Sao chép link"}</Button><Button variant="secondary" onClick={shareLink} disabled={!link}><SharingAsset node={node} name="IconArrow" />Chia sẻ</Button></div>
     <Button variant="ghost" className="sharing-full-button" href={team ? "/teams" : guest ? "/upload" : "/dashboard"}>{team ? "Về quản lý nhóm" : guest ? "Tạo link khác" : "Về trang quản lý"}</Button>
   </Panel></main>;
 }
 
+function isBackendSharePath(path: string) {
+  const normalized = path.replace(/^\/+/, "");
+  return /^\d+\/files\/[a-zA-Z0-9_-]+$/.test(normalized) || /^guess\/files\/[0-9a-f-]+$/i.test(normalized);
+}
+
+function BackendRecipientScreen({ path, id }: { path: string; id: string }) {
+  const { user } = useApp();
+  const [link, setLink] = useState<BackendLink | null>(null);
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  const validPath = isBackendSharePath(path);
+  useEffect(() => {
+    let active = true;
+    if (!validPath) return () => { active = false; };
+    apiRequest<BackendLink>(`/${path.replace(/^\/+/, "")}`).then(result => {
+      if (active) setLink(result);
+    }).catch(requestError => {
+      if (active) setError(requestError instanceof Error ? requestError.message : "Không thể tải thông tin link.");
+    });
+    return () => { active = false; };
+  }, [path, validPath]);
+
+  async function download() {
+    setError("");
+    setPending(true);
+    try {
+      const blob = await downloadSharedFile(`/${path.replace(/^\/+/, "")}`, password || undefined);
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = link?.file.original_name || "xfile-download";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Không thể tải file.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const shareFile = link ? toDemoFile(link) : null;
+  const loginRequired = !!link && (link.access_mode === "private" || !!link.allowed_emails?.length) && !user;
+  const visibleError = validPath ? error : "Đường dẫn chia sẻ không hợp lệ.";
+
+  return <main className="sharing-success-stage"><Panel className="sharing-success-panel sharing-recipient-panel">
+    <SuccessIcon node="5-12" locked={!!visibleError || loginRequired} />
+    <h1>{visibleError ? "Không thể mở link" : link ? "File được chia sẻ với bạn" : "Đang tải link…"}</h1>
+    <p className="sharing-success-description">{visibleError || (link ? "Thông tin và quyền truy cập được kiểm tra bởi máy chủ." : "Đang lấy thông tin chia sẻ…")}</p>
+    {shareFile && <FileCard file={shareFile} node="5-12" status={link?.access_mode === "private" ? "Riêng tư" : link?.access_mode === "password" ? "Bảo vệ bằng mật khẩu" : "Chia sẻ qua xFile"} />}
+    {link && !loginRequired && link.access_mode === "password" && <Field label="Mật khẩu truy cập" type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="current-password" />}
+    {loginRequired && <Button href={`/login?next=${encodeURIComponent(`/g/${id}?path=${encodeURIComponent(path)}`)}`} className="sharing-full-button">Đăng nhập để truy cập</Button>}
+    {link && !loginRequired && <Button onClick={download} disabled={pending} className="sharing-full-button">{pending ? "Đang tải…" : "Tải file"}</Button>}
+    {visibleError && <p className="sharing-error" role="alert">{visibleError}</p>}
+    {link && <p className="sharing-expiry">{link.expires_at ? `Hết hạn ${dateLabel(link.expires_at)}` : "Không giới hạn thời gian"}{link.max_access_count ? ` · Tối đa ${link.max_access_count} lượt tải` : ""}</p>}
+    <Link className="sharing-text-link" href="/">Chia sẻ file của bạn với xFile</Link>
+  </Panel></main>;
+}
+
 export function RecipientScreen({ id }: { id: string }) {
+  const params = useSearchParams();
+  const path = params.get("path");
+  if (path) return <BackendRecipientScreen path={path} id={id} />;
+  return <DemoRecipientScreen id={id} />;
+}
+
+function DemoRecipientScreen({ id }: { id: string }) {
   const { files, updateFile, toast, user } = useApp();
   const params = useSearchParams();
   const team = params.has("team");

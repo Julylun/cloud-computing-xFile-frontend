@@ -77,6 +77,22 @@
 .ws-chart-tooltip { position: absolute; top: 8px; z-index: 1; padding: 8px 12px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; pointer-events: none; }
 .ws-chart-dates { display: grid; grid-template-columns: repeat(7, 1fr); min-height: 24px; }
 .ws-chart-dates small { color: var(--subtle); font-size: 12px; }
+.ws-analytics-controls { display: flex; flex-wrap: wrap; gap: 16px; }
+.ws-analytics-controls label { display: grid; gap: 8px; color: var(--muted); font-size: 13px; }
+.ws-analytics-controls select { min-width: 220px; padding: 10px 12px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 9px; }
+.ws-analytics-all-time { color: var(--muted); font-size: 13px; }
+.ws-analytics-error { color: var(--danger, #f87171); }
+.ws-analytics-chart { min-height: 220px; display: grid; grid-auto-columns: minmax(28px, 1fr); grid-auto-flow: column; align-items: end; gap: 8px; overflow-x: auto; padding: 16px 4px 0; }
+.ws-analytics-day { height: 100%; min-width: 28px; display: grid; grid-template-rows: 1fr auto; justify-items: center; gap: 10px; }
+.ws-analytics-bars { width: 100%; height: 180px; display: flex; justify-content: center; align-items: end; gap: 4px; border-bottom: 1px solid var(--border); }
+.ws-analytics-bars > span { width: min(35%, 16px); min-height: 2px; border-radius: 5px 5px 0 0; }
+.ws-analytics-view-bar { background: var(--primary); }
+.ws-analytics-download-bar { background: var(--cyan, #3dd9ed); }
+.ws-analytics-day small { color: var(--subtle); font-size: 11px; }
+.ws-analytics-placeholder { min-height: 180px; display: grid; place-items: center; color: var(--muted); }
+.ws-recent .ws-activity-row { display: flex; justify-content: space-between; gap: 16px; }
+.ws-activity-row time { color: var(--subtle); text-align: right; }
+.ws-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .ws-two-columns { display: grid; grid-template-columns: minmax(0,720fr) minmax(0,384fr); gap: 24px; align-items: start; }
 .ws-recent, .ws-link-controls { display: flex; flex-direction: column; gap: 20px; padding: 24px; }
 .ws-recent p { white-space: pre-wrap; font-size: 14px; color: var(--muted); padding-bottom: 20px; border-bottom: 1px solid var(--border); }

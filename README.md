@@ -1,5 +1,25 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Backend API
+
+The frontend proxies API calls through `/api/backend` to avoid browser CORS
+requirements. Start the NestJS backend, then set `XFILE_BACKEND_URL` before
+starting Next.js if the backend is not at `http://localhost:3000`:
+
+```powershell
+$env:XFILE_BACKEND_URL = "http://localhost:3000"
+npm run dev
+```
+
+Authenticated uploads are limited by the backend to 500 MB. Guest uploads use
+the backend guest endpoint, which currently allows 50 MB and expires after 24
+hours.
+
+The backend currently supports registration OTP verification, login, profile
+updates, password changes for signed-in users, link creation and deletion, and
+link expiry by time or download count. It does not expose forgot-password,
+resend-OTP, team-management, or update-existing-link endpoints.
+
 ## Getting Started
 
 First, run the development server:
@@ -14,7 +34,8 @@ pnpm dev
 bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open the URL printed by Next.js. If the backend already uses port 3000, Next.js
+will usually start on port 3001.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

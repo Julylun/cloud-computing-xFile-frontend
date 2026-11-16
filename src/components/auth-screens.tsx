@@ -2,25 +2,16 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, useSyncExternalStore, type ClipboardEvent, type FormEvent, type KeyboardEvent } from "react";
+import { useRef, useState, useSyncExternalStore, type ClipboardEvent, type FormEvent, type KeyboardEvent } from "react";
 import { Badge, Button, Field, Panel } from "@/components/ui";
 import { useApp } from "./app-provider";
+import { apiRequest, ApiError, type UserProfile } from "@/lib/api";
 import "@/styles/auth.css";
 
-const DEMO_OTP = "284123";
 const CONTACT_KEY = "xfile-auth-contact";
-const NAME_KEY = "xfile-auth-name";
 const FLOW_KEY = "xfile-auth-flow";
 function authAsset(node: string, name: string) {
   return `/assets/auth/${node}/${name}.svg`;
-}
-
-function isValidContact(value: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) || /^\+?\d{9,15}$/.test(value.replace(/[\s()-]/g, ""));
-}
-
-function contactEmail(value: string) {
-  return value.includes("@") && isValidContact(value) ? value : undefined;
 }
 
 function isValidPassword(value: string) {
@@ -97,14 +88,24 @@ export function LoginScreen() {
     const data = new FormData(event.currentTarget);
     const contact = String(data.get("contact") || "").trim();
     const password = String(data.get("password") || "");
-    if (!isValidContact(contact)) return setError("Vui lòng nhập email hoặc số điện thoại hợp lệ.");
-    if (password.length < 8) return setError("Mật khẩu cần có ít nhất 8 ký tự.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact)) return setError("Backend hiện yêu cầu đăng nhập bằng email.");
+    if (password.length < 1) return setError("Vui lòng nhập mật khẩu.");
     setError("");
     setPending(true);
-    await new Promise(resolve => window.setTimeout(resolve, 350));
-    signIn(contact.includes("@") ? contact.split("@")[0] : "Minh Lâm", contactEmail(contact));
-    toast("Đăng nhập thành công. Chào mừng bạn đến với xFile!");
-    router.push("/dashboard");
+    try {
+      const result = await apiRequest<{ access_token: string; user: Pick<UserProfile, "id" | "email" | "username" | "display_name"> }>("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email: contact, password }),
+      });
+      signIn(result.user, result.access_token);
+      toast("Đăng nhập thành công. Chào mừng bạn đến với xFile!");
+      const next = new URLSearchParams(window.location.search).get("next");
+      router.push(next?.startsWith("/") && !next.startsWith("//") ? next : "/dashboard");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Không thể đăng nhập.");
+    } finally {
+      setPending(false);
+    }
   }
 
   return (
@@ -115,7 +116,7 @@ export function LoginScreen() {
         <h2>Đăng nhập</h2>
         <p className="auth-description">Tiếp tục chia sẻ và quản lý file của bạn.</p>
         <form className="auth-form" onSubmit={handleSubmit} noValidate>
-          <Field label="Email hoặc số điện thoại" name="contact" autoComplete="username" defaultValue="minhlam@example.com" required className="auth-input" />
+          <Field label="Email" name="contact" type="email" autoComplete="username" required className="auth-input" />
           <PasswordField label="Mật khẩu" name="password" />
           <Link className="auth-text-link" href="/forgot-password">Quên mật khẩu?</Link>
           <FormError message={error} />
@@ -142,18 +143,26 @@ export function RegisterScreen() {
     const username = String(data.get("username") || "").trim();
     const password = String(data.get("password") || "");
     const confirm = String(data.get("confirm") || "");
-    if (!isValidContact(contact)) return setError("Vui lòng nhập email hoặc số điện thoại hợp lệ.");
-    if (username.length < 2) return setError("Tên người dùng cần có ít nhất 2 ký tự.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact)) return setError("Vui lòng nhập email hợp lệ.");
+    if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) return setError("Tên người dùng cần từ 3–30 ký tự, chỉ gồm chữ, số và dấu gạch dưới.");
     if (!isValidPassword(password)) return setError("Mật khẩu cần ít nhất 8 ký tự, gồm chữ và số.");
     if (password !== confirm) return setError("Mật khẩu nhập lại chưa khớp.");
     setError("");
     setPending(true);
-    sessionStorage.setItem(CONTACT_KEY, contact);
-    sessionStorage.setItem(NAME_KEY, username);
-    sessionStorage.setItem(FLOW_KEY, "register");
-    await new Promise(resolve => window.setTimeout(resolve, 350));
-    toast(`Mã xác thực dùng thử: ${DEMO_OTP}`);
-    router.push("/verify-otp");
+    try {
+      await apiRequest<UserProfile>("/auth/register", {
+        method: "POST",
+        body: JSON.stringify({ email: contact, username, display_name: username, password }),
+      });
+      sessionStorage.setItem(CONTACT_KEY, contact);
+      sessionStorage.setItem(FLOW_KEY, "register");
+      toast("Tài khoản đã được tạo. Hãy nhập mã OTP trong email để xác thực.");
+      router.push("/verify-otp");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Không thể tạo tài khoản.");
+    } finally {
+      setPending(false);
+    }
   }
 
   return (
@@ -164,8 +173,8 @@ export function RegisterScreen() {
         <h2>Tạo tài khoản</h2>
         <p className="auth-description">Chia sẻ file đến 500 MB và quản lý mọi đường link.</p>
         <form className="auth-form" onSubmit={handleSubmit} noValidate>
-          <Field label="Email hoặc số điện thoại" name="contact" placeholder="Nhập email hoặc số điện thoại" autoComplete="username" required className="auth-input" />
-          <Field label="Tên người dùng" name="username" placeholder="minhlam" autoComplete="nickname" required minLength={2} maxLength={40} className="auth-input" />
+          <Field label="Email" name="contact" type="email" placeholder="name@example.com" autoComplete="username" required className="auth-input" />
+          <Field label="Tên người dùng" name="username" placeholder="minhlam" autoComplete="nickname" required minLength={3} maxLength={30} className="auth-input" />
           <PasswordField label="Mật khẩu" name="password" placeholder="Tạo mật khẩu" assetNode="5-5" autoComplete="new-password" />
           <PasswordField label="Nhập lại mật khẩu" name="confirm" placeholder="Xác nhận mật khẩu" assetNode="5-5" autoComplete="new-password" />
           <p className="auth-terms-consent">Bằng việc đăng ký, bạn đồng ý với <Link href="/terms">Điều khoản sử dụng</Link> của xFile.</p>
@@ -179,36 +188,13 @@ export function RegisterScreen() {
 }
 
 export function ForgotPasswordScreen() {
-  const router = useRouter();
-  const { toast } = useApp();
-  const [error, setError] = useState("");
-  const [pending, setPending] = useState(false);
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const contact = String(new FormData(event.currentTarget).get("contact") || "").trim();
-    if (!isValidContact(contact)) return setError("Vui lòng nhập email hoặc số điện thoại hợp lệ.");
-    setError("");
-    setPending(true);
-    sessionStorage.setItem(CONTACT_KEY, contact);
-    sessionStorage.setItem(FLOW_KEY, "recovery");
-    await new Promise(resolve => window.setTimeout(resolve, 350));
-    toast(`Mã xác thực dùng thử: ${DEMO_OTP}`);
-    router.push("/verify-otp");
-  }
-
   return (
     <main className="auth-recovery-layout" data-node-id="5:6">
       <Panel className="auth-card auth-recovery-card">
-        <Badge>BƯỚC 1 / 3</Badge>
+        <Badge>CHƯA ĐƯỢC HỖ TRỢ</Badge>
         <h1>Quên mật khẩu?</h1>
-        <p className="auth-description">Nhập email hoặc số điện thoại đã đăng ký để nhận mã xác thực.</p>
-        <form className="auth-form" onSubmit={handleSubmit} noValidate>
-          <Field label="Email hoặc số điện thoại" name="contact" defaultValue="minhlam@example.com" autoComplete="username" required className="auth-input" />
-          <FormError message={error} />
-          <Button type="submit" disabled={pending}>{pending ? "Đang tiếp tục…" : "Gửi mã xác thực"}</Button>
-        </form>
-        <Button href="/login" variant="ghost">← Quay lại đăng nhập</Button>
+        <p className="auth-description">Backend hiện chưa có API quên hoặc đặt lại mật khẩu. Nếu bạn còn đăng nhập, hãy đổi mật khẩu trong phần Cài đặt.</p>
+        <Button href="/login">Quay lại đăng nhập</Button>
       </Panel>
     </main>
   );
@@ -216,17 +202,12 @@ export function ForgotPasswordScreen() {
 
 export function VerifyOtpScreen() {
   const router = useRouter();
-  const { toast, signIn } = useApp();
-  const [digits, setDigits] = useState(["2", "8", "4", "", "", ""]);
+  const { toast } = useApp();
+  const [digits, setDigits] = useState(["", "", "", "", "", ""]);
   const contact = useSyncExternalStore(subscribeContact, getContactSnapshot, () => "m•••••@example.com");
-  const [countdown, setCountdown] = useState(42);
   const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
   const inputs = useRef<(HTMLInputElement | null)[]>([]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setCountdown(value => Math.max(0, value - 1)), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   function updateDigit(index: number, value: string) {
     const numbers = value.replace(/\D/g, "");
@@ -258,28 +239,29 @@ export function VerifyOtpScreen() {
     updateDigit(pasted.length === 6 ? 0 : index, pasted);
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (digits.join("").length < 6) return setError("Vui lòng nhập đủ 6 chữ số.");
-    if (digits.join("") !== DEMO_OTP) return setError(`Mã chưa chính xác. Mã dùng thử là ${DEMO_OTP}.`);
     setError("");
-    if (sessionStorage.getItem(FLOW_KEY) === "register") {
-      signIn(sessionStorage.getItem(NAME_KEY) || "Minh Lâm", contactEmail(sessionStorage.getItem(CONTACT_KEY) || ""));
-      toast("Tạo tài khoản thành công. Chào mừng bạn đến với xFile!");
-      sessionStorage.removeItem(FLOW_KEY);
-      router.push("/dashboard");
-    } else {
-      toast("Xác thực thành công. Bạn có thể tạo mật khẩu mới.");
-      router.push("/reset-password");
+    const flow = sessionStorage.getItem(FLOW_KEY);
+    if (flow !== "register") {
+      setError("Backend hiện chỉ xác thực OTP đăng ký, chưa hỗ trợ OTP khôi phục mật khẩu.");
+      return;
     }
-  }
-
-  function resendCode() {
-    setCountdown(42);
-    setDigits(["", "", "", "", "", ""]);
-    setError("");
-    inputs.current[0]?.focus();
-    toast(`Mã xác thực dùng thử: ${DEMO_OTP}`);
+    setPending(true);
+    try {
+      await apiRequest("/auth/verify-otp", {
+        method: "POST",
+        body: JSON.stringify({ email: sessionStorage.getItem(CONTACT_KEY), otp: digits.join("") }),
+      });
+      sessionStorage.removeItem(FLOW_KEY);
+      toast("Email đã được xác thực. Hãy đăng nhập để tiếp tục.");
+      router.push("/login");
+    } catch (requestError) {
+      setError(requestError instanceof ApiError ? requestError.message : "Không thể xác thực mã OTP.");
+    } finally {
+      setPending(false);
+    }
   }
 
   return (
@@ -295,9 +277,9 @@ export function VerifyOtpScreen() {
               <input key={index} ref={element => { inputs.current[index] = element; }} aria-label={`Chữ số ${index + 1}`} className={digit ? "auth-otp-filled" : ""} type="text" inputMode="numeric" pattern="[0-9]*" autoComplete={index === 0 ? "one-time-code" : "off"} value={digit} placeholder="—" onChange={event => updateDigit(index, event.target.value)} onKeyDown={event => handleKeyDown(event, index)} onPaste={event => handlePaste(event, index)} onFocus={event => event.target.select()} />
             ))}
           </div>
-          <button className="auth-resend" type="button" disabled={countdown > 0} onClick={resendCode}>{countdown > 0 ? `Gửi lại mã sau 00:${String(countdown).padStart(2, "0")}` : "Gửi lại mã xác thực"}</button>
+          <p className="auth-resend">Backend chưa hỗ trợ gửi lại mã OTP từ giao diện này.</p>
           <FormError message={error} />
-          <Button type="submit">Xác nhận</Button>
+          <Button type="submit" disabled={pending}>{pending ? "Đang xác thực…" : "Xác nhận"}</Button>
         </form>
         <Button href="/forgot-password" variant="ghost">← Thay đổi email / số điện thoại</Button>
       </Panel>
@@ -306,41 +288,13 @@ export function VerifyOtpScreen() {
 }
 
 export function ResetPasswordScreen() {
-  const router = useRouter();
-  const { toast, signIn } = useApp();
-  const [error, setError] = useState("");
-  const [pending, setPending] = useState(false);
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const password = String(data.get("password") || "");
-    const confirm = String(data.get("confirm") || "");
-    if (!isValidPassword(password)) return setError("Mật khẩu cần ít nhất 8 ký tự, gồm chữ và số.");
-    if (password !== confirm) return setError("Mật khẩu nhập lại chưa khớp.");
-    setError("");
-    setPending(true);
-    await new Promise(resolve => window.setTimeout(resolve, 350));
-    const contact = sessionStorage.getItem(CONTACT_KEY) || "minhlam@example.com";
-    signIn(contact.includes("@") ? contact.split("@")[0] : "Minh Lâm", contactEmail(contact));
-    sessionStorage.removeItem(FLOW_KEY);
-    toast("Đã hoàn tất bước tạo mật khẩu mới và đăng nhập bản dùng thử.");
-    router.push("/dashboard");
-  }
-
   return (
     <main className="auth-recovery-layout" data-node-id="5:8">
       <Panel className="auth-card auth-recovery-card auth-reset-card">
-        <Badge>BƯỚC 3 / 3</Badge>
+        <Badge>CHƯA ĐƯỢC HỖ TRỢ</Badge>
         <h1>Tạo mật khẩu mới</h1>
-        <p className="auth-description">Chọn mật khẩu mới để tiếp tục truy cập tài khoản.</p>
-        <form className="auth-form" onSubmit={handleSubmit} noValidate>
-          <PasswordField label="Mật khẩu mới" name="password" assetNode="5-8" autoComplete="new-password" autoFocus />
-          <p className="auth-password-hint">Ít nhất 8 ký tự, gồm chữ và số.</p>
-          <PasswordField label="Nhập lại mật khẩu" name="confirm" assetNode="5-8" autoComplete="new-password" />
-          <FormError message={error} />
-          <Button type="submit" disabled={pending}>{pending ? "Đang hoàn tất…" : "Lưu mật khẩu & đăng nhập"}</Button>
-        </form>
+        <p className="auth-description">Backend hiện chưa có API đặt lại mật khẩu. Chức năng đổi mật khẩu cần đăng nhập trước.</p>
+        <Button href="/login">Quay lại đăng nhập</Button>
       </Panel>
     </main>
   );
