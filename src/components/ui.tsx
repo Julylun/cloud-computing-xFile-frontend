@@ -34,7 +34,7 @@ export function Field({ label, error, hint, className = "", id, ...props }: Reac
 export function PageHeading({ eyebrow, title, description, children }: { eyebrow?: string; title: string; description?: string; children?: React.ReactNode }) {
   return <div className="page-heading">{eyebrow && <p className="eyebrow">{eyebrow}</p>}<div className="page-heading-row"><div><h1>{title}</h1>{description && <p className="muted">{description}</p>}</div>{children}</div></div>;
 }
-const workspaceRoutes = ["/dashboard", "/create", "/analytics", "/teams", "/settings", "/notifications", "/ui-states"];
+const workspaceRoutes = ["/dashboard", "/create", "/analytics", "/teams", "/team-share", "/settings", "/notifications", "/ui-states"];
 export function Background() {
   const pathname = usePathname(); const home = pathname === "/";
   const isWorkspace = workspaceRoutes.some((route) => pathname.startsWith(route));

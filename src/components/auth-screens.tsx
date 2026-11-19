@@ -10,6 +10,7 @@ import "@/styles/auth.css";
 
 const CONTACT_KEY = "xfile-auth-contact";
 const FLOW_KEY = "xfile-auth-flow";
+const RESET_OTP_KEY = "xfile-reset-otp";
 function authAsset(node: string, name: string) {
   return `/assets/auth/${node}/${name}.svg`;
 }
@@ -188,12 +189,50 @@ export function RegisterScreen() {
 }
 
 export function ForgotPasswordScreen() {
+  const router = useRouter();
+  const { toast } = useApp();
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const email = String(data.get("email") || "").trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError("Vui lòng nhập email hợp lệ.");
+      return;
+    }
+
+    setError("");
+    setPending(true);
+    try {
+      await apiRequest<{ message: string; email: string }>("/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+      sessionStorage.setItem(CONTACT_KEY, email);
+      sessionStorage.setItem(FLOW_KEY, "reset");
+      sessionStorage.removeItem(RESET_OTP_KEY);
+      toast("Mã đặt lại mật khẩu đã được gửi đến email.");
+      router.push("/verify-otp");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Không thể gửi mã đặt lại mật khẩu.");
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
     <main className="auth-recovery-layout" data-node-id="5:6">
       <Panel className="auth-card auth-recovery-card">
-        <Badge>CHƯA ĐƯỢC HỖ TRỢ</Badge>
+        <Badge>KHÔI PHỤC TÀI KHOẢN</Badge>
         <h1>Quên mật khẩu?</h1>
-        <p className="auth-description">Backend hiện chưa có API quên hoặc đặt lại mật khẩu. Nếu bạn còn đăng nhập, hãy đổi mật khẩu trong phần Cài đặt.</p>
+        <p className="auth-description">Nhập email tài khoản để nhận mã OTP đặt lại mật khẩu.</p>
+        <form className="auth-form" onSubmit={handleSubmit} noValidate>
+          <Field label="Email" name="email" type="email" autoComplete="email" required className="auth-input" />
+          <FormError message={error} />
+          <Button type="submit" disabled={pending}>{pending ? "Đang gửi mã…" : "Gửi mã OTP"}</Button>
+        </form>
         <Button href="/login">Quay lại đăng nhập</Button>
       </Panel>
     </main>
@@ -244,19 +283,35 @@ export function VerifyOtpScreen() {
     if (digits.join("").length < 6) return setError("Vui lòng nhập đủ 6 chữ số.");
     setError("");
     const flow = sessionStorage.getItem(FLOW_KEY);
-    if (flow !== "register") {
-      setError("Backend hiện chỉ xác thực OTP đăng ký, chưa hỗ trợ OTP khôi phục mật khẩu.");
+    const email = sessionStorage.getItem(CONTACT_KEY);
+    if (flow !== "register" && flow !== "reset") {
+      setError("Phiên xác thực đã hết hạn. Hãy bắt đầu lại quy trình.");
+      return;
+    }
+    if (!email) {
+      setError("Thiếu email xác thực. Hãy bắt đầu lại quy trình.");
       return;
     }
     setPending(true);
     try {
-      await apiRequest("/auth/verify-otp", {
-        method: "POST",
-        body: JSON.stringify({ email: sessionStorage.getItem(CONTACT_KEY), otp: digits.join("") }),
-      });
-      sessionStorage.removeItem(FLOW_KEY);
-      toast("Email đã được xác thực. Hãy đăng nhập để tiếp tục.");
-      router.push("/login");
+      if (flow === "reset") {
+        await apiRequest<{ valid: boolean }>("/auth/verify-reset-otp", {
+          method: "POST",
+          body: JSON.stringify({ email, otp: digits.join("") }),
+        });
+        sessionStorage.setItem(RESET_OTP_KEY, digits.join(""));
+        sessionStorage.setItem(FLOW_KEY, "reset-verified");
+        toast("Mã OTP hợp lệ. Hãy tạo mật khẩu mới.");
+        router.push("/reset-password");
+      } else {
+        await apiRequest("/auth/verify-otp", {
+          method: "POST",
+          body: JSON.stringify({ email, otp: digits.join("") }),
+        });
+        sessionStorage.removeItem(FLOW_KEY);
+        toast("Email đã được xác thực. Hãy đăng nhập để tiếp tục.");
+        router.push("/login");
+      }
     } catch (requestError) {
       setError(requestError instanceof ApiError ? requestError.message : "Không thể xác thực mã OTP.");
     } finally {
@@ -277,7 +332,7 @@ export function VerifyOtpScreen() {
               <input key={index} ref={element => { inputs.current[index] = element; }} aria-label={`Chữ số ${index + 1}`} className={digit ? "auth-otp-filled" : ""} type="text" inputMode="numeric" pattern="[0-9]*" autoComplete={index === 0 ? "one-time-code" : "off"} value={digit} placeholder="—" onChange={event => updateDigit(index, event.target.value)} onKeyDown={event => handleKeyDown(event, index)} onPaste={event => handlePaste(event, index)} onFocus={event => event.target.select()} />
             ))}
           </div>
-          <p className="auth-resend">Backend chưa hỗ trợ gửi lại mã OTP từ giao diện này.</p>
+          <p className="auth-resend">Nếu chưa nhận được mã, hãy kiểm tra cả thư mục thư rác.</p>
           <FormError message={error} />
           <Button type="submit" disabled={pending}>{pending ? "Đang xác thực…" : "Xác nhận"}</Button>
         </form>
@@ -288,13 +343,68 @@ export function VerifyOtpScreen() {
 }
 
 export function ResetPasswordScreen() {
+  const router = useRouter();
+  const { toast } = useApp();
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const password = String(data.get("password") || "");
+    const confirm = String(data.get("confirm") || "");
+    const email = sessionStorage.getItem(CONTACT_KEY);
+    const otp = sessionStorage.getItem(RESET_OTP_KEY);
+    if (sessionStorage.getItem(FLOW_KEY) !== "reset-verified" || !email || !otp) {
+      setError("Phiên đặt lại mật khẩu đã hết hạn. Hãy yêu cầu mã OTP mới.");
+      return;
+    }
+    if (!isValidPassword(password)) {
+      setError("Mật khẩu cần ít nhất 8 ký tự, gồm chữ và số.");
+      return;
+    }
+    if (password !== confirm) {
+      setError("Mật khẩu xác nhận chưa khớp.");
+      return;
+    }
+
+    setError("");
+    setPending(true);
+    try {
+      await apiRequest<{ message: string }>("/auth/reset-password", {
+        method: "POST",
+        body: JSON.stringify({
+          email,
+          otp,
+          new_password: password,
+          confirm_password: confirm,
+        }),
+      });
+      sessionStorage.removeItem(CONTACT_KEY);
+      sessionStorage.removeItem(FLOW_KEY);
+      sessionStorage.removeItem(RESET_OTP_KEY);
+      toast("Đặt lại mật khẩu thành công. Hãy đăng nhập bằng mật khẩu mới.");
+      router.push("/login");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Không thể đặt lại mật khẩu.");
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
     <main className="auth-recovery-layout" data-node-id="5:8">
       <Panel className="auth-card auth-recovery-card auth-reset-card">
-        <Badge>CHƯA ĐƯỢC HỖ TRỢ</Badge>
+        <Badge>BƯỚC CUỐI</Badge>
         <h1>Tạo mật khẩu mới</h1>
-        <p className="auth-description">Backend hiện chưa có API đặt lại mật khẩu. Chức năng đổi mật khẩu cần đăng nhập trước.</p>
-        <Button href="/login">Quay lại đăng nhập</Button>
+        <p className="auth-description">Tạo mật khẩu mới để tiếp tục đăng nhập.</p>
+        <form className="auth-form" onSubmit={handleSubmit} noValidate>
+          <PasswordField label="Mật khẩu mới" name="password" placeholder="Tạo mật khẩu mới" autoComplete="new-password" />
+          <PasswordField label="Xác nhận mật khẩu mới" name="confirm" placeholder="Nhập lại mật khẩu mới" autoComplete="new-password" />
+          <FormError message={error} />
+          <Button type="submit" disabled={pending}>{pending ? "Đang cập nhật…" : "Đặt lại mật khẩu"}</Button>
+        </form>
+        <Button href="/forgot-password" variant="ghost">Yêu cầu mã OTP mới</Button>
       </Panel>
     </main>
   );

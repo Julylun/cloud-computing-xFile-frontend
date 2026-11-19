@@ -3,22 +3,29 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 ## Backend API
 
 The frontend proxies API calls through `/api/backend` to avoid browser CORS
-requirements. Start the NestJS backend, then set `XFILE_BACKEND_URL` before
-starting Next.js if the backend is not at `http://localhost:3000`:
+requirements. The NestJS backend defaults to port `3000`; Next.js development
+uses port `3001` so the two servers cannot accidentally claim the same port.
+If the backend uses another address, set `XFILE_BACKEND_URL` before starting
+Next.js:
 
 ```powershell
+# In the frontend terminal
 $env:XFILE_BACKEND_URL = "http://localhost:3000"
 npm run dev
 ```
+
+Start the backend in a separate terminal with `npm run start:dev`. Open the
+frontend URL printed by Next.js (normally `http://localhost:3001`).
 
 Authenticated uploads are limited by the backend to 500 MB. Guest uploads use
 the backend guest endpoint, which currently allows 50 MB and expires after 24
 hours.
 
-The backend currently supports registration OTP verification, login, profile
-updates, password changes for signed-in users, link creation and deletion, and
-link expiry by time or download count. It does not expose forgot-password,
-resend-OTP, team-management, or update-existing-link endpoints.
+The backend supports registration and password-reset OTP verification, login,
+profile and password updates, link creation and deletion, and link expiry by
+time or download count. Team APIs support team/member management, sharing and
+removing links, role changes, ownership transfer, QR generation, and download
+by QR. Editing an existing link's security settings is not supported.
 
 ## Getting Started
 
@@ -34,8 +41,7 @@ pnpm dev
 bun dev
 ```
 
-Open the URL printed by Next.js. If the backend already uses port 3000, Next.js
-will usually start on port 3001.
+Open the URL printed by Next.js.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

@@ -100,6 +100,54 @@ export async function apiRequest<T>(
   return (await response.json()) as T;
 }
 
+export async function apiRequestFile(
+  path: string,
+  options: RequestInit = {},
+): Promise<{ blob: Blob; filename?: string }> {
+  const headers = new Headers(options.headers);
+  if (typeof FormData === "undefined" || !(options.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("xfile-access-token");
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    headers.set("x-analytics-visitor-id", getAnalyticsVisitorId());
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`/api/backend${path}`, { ...options, headers });
+  } catch {
+    throw new ApiError("Không thể kết nối máy chủ. Hãy kiểm tra backend đang chạy.", 0);
+  }
+
+  if (!response.ok) {
+    let message = `Yêu cầu thất bại (${response.status}).`;
+    try {
+      const body = (await response.json()) as ApiErrorResponse;
+      if (Array.isArray(body.message)) message = body.message.join(", ");
+      else if (body.message) message = body.message;
+      else if (body.error) message = body.error;
+    } catch {
+      // Keep the HTTP status message when the server does not return JSON.
+    }
+    throw new ApiError(message, response.status);
+  }
+
+  const disposition = response.headers.get("content-disposition") || "";
+  const encodedFilename = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  const quotedFilename = disposition.match(/filename="([^"]+)"/i)?.[1];
+  let filename = quotedFilename;
+  if (encodedFilename) {
+    try {
+      filename = decodeURIComponent(encodedFilename);
+    } catch {
+      filename = quotedFilename;
+    }
+  }
+  return { blob: await response.blob(), filename };
+}
+
 export async function downloadSharedFile(path: string, password?: string) {
   const headers = new Headers();
   if (typeof window !== "undefined") {

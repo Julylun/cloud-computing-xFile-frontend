@@ -3,16 +3,11 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import QRCode from "qrcode";
 import { useApp, type DemoFile } from "@/components/app-provider";
 import { Badge, Button, Field, Panel, WorkspaceShell } from "@/components/ui";
 import { apiRequest, downloadSharedFile, type BackendLink, toDemoFile } from "@/lib/api";
 import "@/styles/sharing.css";
-
-const QRCode = {
-  async toDataURL(_text: string, _options?: unknown) {
-    return "";
-  },
-};
 
 type AccessMode = "public" | "private" | "email" | "team";
 type ShareSettings = {
@@ -259,13 +254,15 @@ export function UploadScreen() {
 }
 
 export function CreateScreen() {
-  const { files, addFile, toast } = useApp();
+  const { files, addFile, toast, user, accessToken } = useApp();
   const router = useRouter();
   const params = useSearchParams();
   const editingId = params.get("edit") || "";
   const existing = files.find(file => file.id === editingId);
   const saved = useSavedSettings(editingId);
-  const teams = useSavedTeams();
+  const [teams, setTeams] = useState<SharedTeam[]>([]);
+  const [teamsUserId, setTeamsUserId] = useState<number | null>(null);
+  const [teamsError, setTeamsError] = useState("");
   const selection = useFileSelection(500, registeredExample);
   const setSelectedFile = selection.setFile;
   const [settings, setSettings] = useState<ShareSettings>(defaultSettings);
@@ -273,6 +270,22 @@ export function CreateScreen() {
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const lastEditing = useRef("");
+  useEffect(() => {
+    if (!user || !accessToken) return;
+    let active = true;
+    apiRequest<{ id: number; name: string; members: { email: string }[] }[]>("/teams")
+      .then(result => {
+        if (!active) return;
+        setTeams(result.map(team => ({ ...team, id: String(team.id) })));
+        setTeamsUserId(user.id);
+        setTeamsError("");
+      })
+      .catch(requestError => {
+        if (active) setTeamsError(requestError instanceof Error ? requestError.message : "Không thể tải danh sách nhóm.");
+      });
+    return () => { active = false; };
+  }, [accessToken, user]);
+
   useEffect(() => {
     if (!existing || lastEditing.current === existing.id) return;
     const frame = requestAnimationFrame(() => {
@@ -283,7 +296,9 @@ export function CreateScreen() {
     return () => cancelAnimationFrame(frame);
   }, [existing, saved, setSelectedFile]);
 
-  const selectedGroup = teams.find(team => settings.teamId ? team.id === settings.teamId : team.name === settings.team);
+  const accountTeams = teamsUserId === user?.id ? teams : [];
+  const teamsLoading = !!user && teamsUserId !== user.id && !teamsError;
+  const selectedGroup = accountTeams.find(team => settings.teamId ? team.id === settings.teamId : team.name === settings.team);
 
   function change<K extends keyof ShareSettings>(key: K, value: ShareSettings[K]) { setSettings(current => ({ ...current, [key]: value })); }
   function resetForm() {
@@ -298,7 +313,7 @@ export function CreateScreen() {
     }
     if (selection.progress < 100) return;
     if (!selection.file.rawFile) { setError("Hãy chọn file thật từ thiết bị trước khi tạo link."); return; }
-    if (settings.mode === "team") { setError("Backend hiện chưa có API quản lý nhóm để cấp quyền cho team."); return; }
+    if (settings.mode === "team" && !selectedGroup) { setError("Chọn một nhóm hiện có hoặc tạo nhóm trong màn hình Quản lý nhóm."); return; }
     if (settings.mode === "email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(settings.email)) { setError("Nhập email hợp lệ của người nhận."); return; }
     if (settings.passwordEnabled && settings.password.length < 6) { setError("Mật khẩu cần ít nhất 6 ký tự."); return; }
     if (settings.passwordEnabled && settings.mode === "private") { setError("Backend không hỗ trợ đồng thời chế độ Riêng tư và mật khẩu trên cùng một link."); return; }
@@ -319,6 +334,7 @@ export function CreateScreen() {
         access_mode: "public" | "private" | "password";
         password?: string;
         allowed_emails?: string[];
+        team_ids?: number[];
         expiry_mode: "none" | "time" | "access_count";
         expires_at?: string;
         max_access_count?: number;
@@ -330,6 +346,7 @@ export function CreateScreen() {
       if (slug) body.custom_slug = slug;
       if (settings.passwordEnabled) body.password = settings.password;
       if (settings.mode === "email") body.allowed_emails = [settings.email.trim()];
+      if (settings.mode === "team" && selectedGroup) body.team_ids = [Number(selectedGroup.id)];
       if (settings.expiryMode === "time") body.expires_at = new Date(expiryTimestamp(settings.expiry)).toISOString();
       if (settings.expiryMode === "access_count") body.max_access_count = settings.maxDownloads;
       const link = await apiRequest<BackendLink>("/links", { method: "POST", body: JSON.stringify(body) });
@@ -337,7 +354,7 @@ export function CreateScreen() {
       addFile(created);
       saveSettings(created.id, { ...settings, slug: link.share_path, guest: false });
       toast("Đã upload file và tạo link.");
-      router.push(`/share?file=${encodeURIComponent(created.id)}`);
+      router.push(settings.mode === "team" ? "/teams" : `/share?file=${encodeURIComponent(created.id)}`);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Không thể upload file hoặc tạo link.");
     } finally {
@@ -355,7 +372,9 @@ export function CreateScreen() {
         <h2>Ai có thể truy cập?</h2><div className="sharing-access-modes" aria-label="Quyền truy cập">
           {([{ mode: "public", label: "Công khai", icon: "IconGlobe" }, { mode: "private", label: "Riêng tư", icon: "IconLock" }, { mode: "email", label: "Email", icon: "IconMail" }, { mode: "team", label: "Nhóm", icon: "IconTeam1" }] as const).map(item => <Button key={item.mode} variant={settings.mode === item.mode ? "primary" : "secondary"} aria-pressed={settings.mode === item.mode} onClick={() => change("mode", item.mode)}><SharingAsset node="5-11" name={item.icon} />{item.label}</Button>)}
         </div>
-        <div className="sharing-fields-row"><label className="sharing-field-label">Nhóm được truy cập<select value={selectedGroup?.id || ""} disabled={settings.mode !== "team"} onChange={event => { const chosen = teams.find(team => team.id === event.target.value); if (chosen) setSettings(current => ({ ...current, team: chosen.name, teamId: chosen.id })); }}>{!selectedGroup && <option value="">Chọn nhóm</option>}{teams.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><Field label="Email được mời (khi chọn Email)" type="email" disabled={settings.mode !== "email"} value={settings.email} placeholder="Nhập email người nhận" onChange={event => change("email", event.target.value)} /></div>
+        {teamsError && <p className="sharing-error" role="alert">{teamsError}</p>}
+        <div className="sharing-fields-row"><label className="sharing-field-label">Nhóm được truy cập<select value={selectedGroup?.id || ""} disabled={settings.mode !== "team"} onChange={event => { const chosen = accountTeams.find(team => team.id === event.target.value); if (chosen) setSettings(current => ({ ...current, team: chosen.name, teamId: chosen.id })); }}>{!selectedGroup && <option value="">{teamsLoading ? "Đang tải nhóm…" : "Chọn nhóm"}</option>}{accountTeams.map(team => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><Field label="Email được mời (khi chọn Email)" type="email" disabled={settings.mode !== "email"} value={settings.email} placeholder="Nhập email người nhận" onChange={event => change("email", event.target.value)} /></div>
+        {settings.mode === "team" && accountTeams.length === 0 && !teamsError && <p className="sharing-small-text">{teamsLoading ? "Đang tải danh sách nhóm…" : <>Bạn chưa có nhóm. <Link href="/teams">Tạo hoặc tham gia nhóm tại Quản lý nhóm.</Link></>}</p>}
         <div className="sharing-password-heading"><SharingAsset node="5-11" name="IconLock1" /><span>Bảo vệ bằng mật khẩu</span><button className={`sharing-status-toggle${settings.passwordEnabled ? " is-on" : ""}`} aria-pressed={settings.passwordEnabled} onClick={() => change("passwordEnabled", !settings.passwordEnabled)}>{settings.passwordEnabled ? "Đang bật" : "Đang tắt"}</button></div>
         <label className="sharing-field-label">Mật khẩu truy cập<div className="sharing-password-input"><input type={showPassword ? "text" : "password"} value={settings.password} disabled={!settings.passwordEnabled} onChange={event => change("password", event.target.value)} minLength={6} autoComplete="new-password" /><button aria-label={showPassword ? "Ẩn mật khẩu" : "Hiện mật khẩu"} onClick={() => setShowPassword(value => !value)}><SharingAsset node="5-11" name="IconEye" /></button></div></label>
         <div className="sharing-divider" /><label className="sharing-field-label">Điều kiện hết hạn<select value={settings.expiryMode} onChange={event => change("expiryMode", event.target.value as ShareSettings["expiryMode"])}><option value="none">Không giới hạn</option><option value="time">Theo thời gian</option><option value="access_count">Theo số lượt tải</option></select></label>
@@ -387,7 +406,8 @@ export function ShareScreen({ team: isTeamScreen = false }: { team?: boolean }) 
   const guest = queryGuest || !!settings?.guest;
   const file = files.find(item => item.id === id);
   const node = team ? "14-56" : guest ? "14-2" : "5-12";
-  const [qr, setQr] = useState("");
+  const [qr, setQr] = useState<{ link: string; dataUrl: string } | null>(null);
+  const [qrError, setQrError] = useState("");
   const [link, setLink] = useState("");
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -396,7 +416,19 @@ export function ShareScreen({ team: isTeamScreen = false }: { team?: boolean }) 
     const shareLink = file?.sharePath
       ? `${window.location.origin}/g/${encodeURIComponent(id)}?path=${encodeURIComponent(file.sharePath)}`
       : `${window.location.origin}/g/${encodeURIComponent(id)}${team ? `?team=${encodeURIComponent(teamId)}` : ""}`;
-    QRCode.toDataURL(shareLink, { width: 196, margin: 2, color: { dark: "#111827", light: "#ffffff" }, errorCorrectionLevel: "M" }).then(value => { if (alive) { setQr(value); setLink(shareLink); } }).catch(() => { if (alive) setLink(shareLink); });
+    QRCode.toDataURL(shareLink, { width: 196, margin: 2, color: { dark: "#111827", light: "#ffffff" }, errorCorrectionLevel: "M" })
+      .then(dataUrl => {
+        if (!alive) return;
+        setQr({ link: shareLink, dataUrl });
+        setQrError("");
+        setLink(shareLink);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setQr(null);
+        setQrError("Không thể tạo mã QR. Hãy thử tải lại trang.");
+        setLink(shareLink);
+      });
     return () => { alive = false; };
   }, [id, team, teamId, shareGroupUnavailable, file?.sharePath]);
   async function copyLink() {
@@ -409,7 +441,6 @@ export function ShareScreen({ team: isTeamScreen = false }: { team?: boolean }) 
     if (navigator.share) { try { await navigator.share({ title: team ? teamName : file?.name || "xFile", url: link }); } catch (error) { if (error instanceof Error && error.name !== "AbortError") await copyLink(); } }
     else await copyLink();
   }
-  const fallbackQr = team ? "QrHttpsXfileAppTeamDesign" : guest ? "QrHttpsXfileAppG7Kq2Mx" : "QrHttpsXfileAppMinhlamBrandKit";
   const selected = file || (guest ? guestExample : registeredExample);
   const accessLabel = guest || settings?.mode === "public" || (!settings && file?.access === "public") ? "Chia sẻ công khai" : settings?.mode === "team" ? fileGroup?.name || settings.team : settings?.mode === "email" || file?.access === "email" ? "Chia sẻ qua email" : settings?.mode === "private" || file?.access === "private" ? "Chỉ bạn" : "Design Team";
   const passwordEnabled = settings?.passwordEnabled ?? (file ? file.access === "password" : !guest);
@@ -420,7 +451,7 @@ export function ShareScreen({ team: isTeamScreen = false }: { team?: boolean }) 
   return <main className={`sharing-success-stage${guest ? " sharing-success-guest" : team ? " sharing-success-team" : ""}`}><Panel className="sharing-success-panel">
     <SuccessIcon node={node} /><h1>Link đã sẵn sàng!</h1><p className="sharing-success-description">{team ? "Mời đồng đội truy cập bằng đường dẫn hoặc mã QR." : "Chia sẻ file bằng đường dẫn hoặc mã QR."}</p>
     <FileCard file={team ? { name: teamName, size: `${group?.members.length || 0} thành viên`, type: "TEAM" } : selected} node={node} status={status} />
-    <div className="sharing-qr-box">{qr ? <img className="sharing-dynamic-qr" src={qr} alt="Mã QR mở đường link chia sẻ" width={196} height={196} /> : file?.sharePath ? <p>Mã QR chưa khả dụng cho link từ máy chủ.</p> : <SharingAsset node={node} name={fallbackQr} alt="Mã QR chia sẻ" />}</div>
+    <div className="sharing-qr-box">{qr?.link === link ? <img className="sharing-dynamic-qr" src={qr.dataUrl} alt="Mã QR mở đường link chia sẻ" width={196} height={196} /> : qrError ? <p role="alert">{qrError}</p> : <p>Đang tạo mã QR…</p>}</div>
     <div className="sharing-link-box"><SharingAsset node={node} name="IconLink" /><a href={link || "#"} target="_blank" rel="noreferrer">{link || `/g/${id}`}</a><button onClick={copyLink} aria-label="Sao chép đường link" disabled={!link}><SharingAsset node={node} name="IconCopy" /></button></div>
     <p className="sharing-expiry">{team ? "Không gian nhóm" : guest ? "Không cần tài khoản · Tối đa 50 MB · Hết hạn sau 24 giờ" : `${file?.expiresAt ? `Hết hạn ${dateLabel(file.expiresAt)}` : "Không giới hạn thời gian"}${file?.maxAccessCount ? ` · Tối đa ${file.maxAccessCount} lượt tải` : ""}`}</p>
     <div className="sharing-success-buttons"><Button onClick={copyLink} disabled={!link}><SharingAsset node={node} name="IconCopy1" />{copied ? "Đã sao chép" : "Sao chép link"}</Button><Button variant="secondary" onClick={shareLink} disabled={!link}><SharingAsset node={node} name="IconArrow" />Chia sẻ</Button></div>
